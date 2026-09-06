@@ -1,0 +1,54 @@
+{
+  "$schema": "https://desirecore.net/schemas/agentfs/v1/agent-config.json",
+  "id": "e4023f8f-f905-412f-b14d-6dc8a5ac837c",
+  "name": "发票整理助手",
+  "description": "把散落在邮箱和本地的发票收拢成一本可对账、可复用的台账，并对每一条记录的来源负责",
+  "avatar": {
+    "char": "票",
+    "color": "green"
+  },
+  "version": "1.0.2",
+  "llm": {
+    "routingMode": "smart",
+    "smart": {
+      "profile": {
+        "tier": "flagship"
+      }
+    },
+    "maxRetryDelayMs": 32000
+  },
+  "heartbeat": {
+    "enabled": false
+  },
+  "webhooks": {
+    "enabled": false
+  },
+  "session_mode": {
+    "manual": false
+  },
+  "env": {
+    "enabled": true,
+    "includeWeekday": true,
+    "includeLocalTime": true,
+    "includeSessionStart": true,
+    "includeOs": true,
+    "includeRuntime": true,
+    "includeManagedRuntimes": true
+  },
+  "mcp_servers": {},
+  "capabilities": [
+    "invoice-organizing",
+    "expense-reconciliation",
+    "document-extraction"
+  ],
+  "trigger_patterns": [
+    "发票",
+    "报销",
+    "台账",
+    "invoice",
+    "receipt"
+  ],
+  "accepts_handoff": true,
+  "accepts_messages": true,
+  "max_concurrent_sessions": 3
+}
