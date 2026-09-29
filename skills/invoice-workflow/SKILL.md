@@ -82,14 +82,28 @@ Preflight 的结论用一段话说给用户听：找到几个邮箱、产物会�
 | Gmail | `POST /api/gmail/messages/fetch?email=..`，请求体 `{query: "after:<起始日前一天> before:<结束日后两天>", limit, pageToken}`，按 `nextPageToken` 翻到没有为止 | **每次都补**：Gmail 查询里的日期按太平洋时间解释，两端各放宽一天，由下一步的缓存搜索按本机时区精确截断；查询串有空格，放请求体别放 URL。服务端已按日期筛过，量就是这个时间段本身 |
 | IMAP 收件箱 | `POST /api/imap/messages/fetch?email=..&folder=INBOX&limit=100&offset=..`，`offset` 从 0 起每次加 100，从最新往旧补 | 看 `.index/coverage.json`：请求的起始日期不早于记下的 `coveredFrom` 就不用补（收件箱按 UID 增量轮询，停机后能接上）；否则补 |
 | Outlook | `POST /api/outlook/messages/fetch?email=..&folder=..&limit=100&offset=..`，同上 | **每次都补**：delta 不可用时轮询每轮只取收件箱最新 30 封，停机期间到得多就有缺口 |
-| IMAP 其他文件夹 | 同 IMAP 收件箱，`folder` 用 `GET /api/imap/folders` 返回的 `path` | **每次都补**，而且**不走下一步的缓存搜索**：缓存主键是 `imap:<uid>` 不带文件夹，不同文件夹同号 UID 会互相覆盖，自定义文件夹在缓存里一律记成 `other`。这类文件夹的候选直接取补拉结果（新客户端用 `save_to` 存页读），`emailKey` 写成 `imap:<email>:<真实文件夹 path>:<id>` 以免与收件箱撞号 |
+| IMAP 其他文件夹 | 同 IMAP 收件箱，`folder` 用 `GET /api/imap/folders` 返回的 `path` | **每次都补**，而且**不走缓存**，见下面「IMAP 其他文件夹」 |
 
-**IMAP / Outlook 什么时候停**：补拉前先记下时间段内的缓存计数 `search?dateFrom=<起>&dateTo=<止>&limit=0` 的 `total`，每补一页再查一次；**连续两页都不再增长**才停。另外 `pagination.hasMore` 为 `false`、或返回了能看清的空页（`offset` 超过总数时服务端返回空页）也停。
+**IMAP 收件箱 / Outlook 什么时候停**：
+
+1. 补拉前先取门槛 `N` = `search?folder=..&dateFrom=<起>&limit=0` 的 `total`（**不带** `dateTo`），即缓存里晚于起始日期的邮件数。服务器上晚于起始日期的邮件至少有这么多，所以 `offset` 达到 `N` 之前一定还没翻到时间段的起点——**这之前不判停止**，但仍从 `offset=0` 补起（更新的区段也可能有缺口）。
+2. `offset` 达到 `N` 之后，每补一页查一次时间段内计数 `search?folder=..&dateFrom=<起>&dateTo=<止>&limit=0`，**连续两页都不再增长**才停。
+3. `pagination.hasMore` 为 `false`、或返回了能看清的空页（`offset` 超过总数时服务端返回空页），随时可停。
+
+少了第 1 步的门槛，「整理上个月」这种比最新几百封更早的时间段，头两页全是更新的邮件、计数不会增长，补拉当场就停，一封都补不进来。中途中断后重跑同理，已补的区段计数也不增长。
 
 - 不能用「缓存里出现了早于起始日期的邮件」或「这一页里有一封早于起始日期的邮件」当停止条件：缓存的收件时间取的是信头 `Date`，发件方可以随便写，一封日期很旧的垃圾邮件、或补拉前就已在缓存里的旧邮件，都会让补拉在第一两页就停——实测按日期停翻一轮漏了 36 封。看「时间段内计数是否还在增长」不受这些影响。
 - `coveredFrom` 只在满足停止条件**之后**才写（值为这次的起始日期）；中途中断不更新，下次照常补。只有 IMAP 收件箱用它跳过补拉，其他一律每次都补。
 - 补拉按序号窗口从服务器现取，约 0.65 封/秒，几千封要十几分钟到半小时，开工前告诉用户。已知残缺：实测某国内邮箱上按窗口补拉会静默漏掉一类发票邮件（按 UID 单独取正常，平台缺陷已记录）——接入邮箱之后到达的这类邮件轮询能收到，接入之前的就可能缺，收尾里要说明。没有 `Date` 信头的邮件收件时间会被记成抓取时刻，可能落在时间段之外，同样在收尾里说明「以信头日期为准」。
-- **旧客户端**看不到补拉的返回内容（整页只剩「省略 1 行」）：IMAP / Outlook 不需要看，按上面的计数判断即可；Gmail 要读 `nextPageToken`，把 `limit` 依次降到 5、2、1，直到看得见为止。
+- **旧客户端**看不到补拉的返回内容（整页只剩「省略 1 行」）：IMAP 收件箱 / Outlook 不需要看，按上面的计数判断即可；Gmail 要读 `nextPageToken`，把 `limit` 依次降到 5、2、1，直到看得见为止。
+
+**IMAP 其他文件夹**（用户把发票归到了自定义文件夹时）：缓存主键是 `imap:<uid>`，不带文件夹，不同文件夹里同号 UID 的邮件会互相覆盖，自定义文件夹在缓存里又一律记成 `other`——缓存计数与缓存搜索对它都不可靠（平台缺陷已记录）。所以：
+
+- **先做完收件箱**的补拉与列候选，**再处理自定义文件夹**；只要补过自定义文件夹，就删掉 `coverage.json` 里收件箱的 `coveredFrom`，下次重补（补拉时同号邮件可能覆盖了收件箱的缓存）。
+- 候选**直接取补拉结果**：能读清返回内容时按每封邮件的日期筛。新客户端用 `save_to` 存页读；旧客户端把 `limit` 依次降到 5、2、1，直到能读清；`limit=1` 仍读不了的记进 `unprocessed`（`emailKey` 用 `list:` 形态，同上）。
+- 停止条件按日期看：某一页九成以上的邮件早于起始日期之后，再补一页就停；`hasMore` 为 `false` 或空页也停。
+- 这类邮件**不调用单封详情接口**（它先查缓存且不看 `folder`，可能返回收件箱里的同号邮件），附件信息直接用补拉结果里的 `attachments[]`，下载时 `folder` 带真实 `path`。
+- `emailKey` 写成 `imap:<email>:<真实文件夹 path>:<id>`，`unprocessed` 与 `ledger.json` 的 `sourceEmailId` 用同一形态，以免与收件箱同号的邮件撞键。
 - 补拉要在下一步翻页之前做完：翻页过程中缓存增删邮件，页边界会漏一封或重复一封。
 
 **② 从缓存列候选**（IMAP 其他文件夹除外，见上）：`GET /api/{gmail,outlook,imap}/search?email=..&folder=..&dateFrom=<起>&dateTo=<止>&hasAttachment=true&offset=..&limit=..`
@@ -102,7 +116,7 @@ Preflight 的结论用一段话说给用户听：找到几个邮箱、产物会�
   - 出现「⚠️ 响应共 …… 不是完整结果」这段说明的客户端，照说明加 `save_to`，把每页存成 `.index/tmp/mail-list/<provider>_<账户 SHA-256 前 8 位>_<起>_<止>_<offset>.json`，再用脚本或 `Read` 处理。候选清单建完就删掉这些文件——里面是范围内全部邮件的正文，包括与发票无关的私人邮件。
   - 只剩 `HTTP 200 OK` 加一行「省略 1 行」的是旧客户端：它不支持对列表用 `save_to`（传了会报错，别试）。把 `limit` 依次降到 5、2、1；`limit=1` 仍然只剩「省略 1 行」，就在 `unprocessed` 里记一条（读不到邮件 id，`emailKey` 写 `list:<provider>:<email>:<起>_<止>:<offset>`，`attachmentName` 写「第 <offset> 封候选邮件」，`retryable: true`，原因写「旧客户端读不了这封邮件的列表数据，请升级客户端后重试」；这类条目每次重新列候选时先清掉再重建），跳到下一个 `offset`，**不能当成这页没有邮件**。收尾核对改为「去重后的 id 数 = `total` − 这类条目数」。旧客户端每 5 封一次调用，默认审批模式下每次都弹一张卡，开工前告诉用户大约多少张。
 
-`messages/fetch` 的返回**不能直接当候选清单用**：IMAP 按序号窗口取，会漏信、会整条重复返回，停止条件也不可靠。它只负责把缓存补齐，候选一律从缓存搜索里取。
+`messages/fetch` 的返回**不能直接当候选清单用**：IMAP 按序号窗口取，会漏信、会整条重复返回，停止条件也不可靠。它只负责把缓存补齐，候选一律从缓存搜索里取——IMAP 自定义文件夹除外（见上）。
 
 Gmail 原生查询串的实用写法：
 
@@ -382,6 +396,8 @@ zip 里再套 zip：内层包不在白名单里，会被 `SKIP` 丢掉——看�
 // .index/emails.json —— 已处理邮件 id
 { "schemaVersion": 1, "updatedAt": "<ISO8601>",
   "emails": { "<provider>:<email>:<mailId 原值>": { /* 处理结论 */ } } }
+// 例外：IMAP 自定义文件夹的邮件 key 带上真实文件夹 path——"imap:<email>:<path>:<mailId 原值>"，
+// 因为不同文件夹的 UID 会撞号（见第 2 步「IMAP 其他文件夹」）；unprocessed 与 sourceEmailId 同形。
 // mailId 一律用列表接口返回的 id **原值**，不做任何清洗。IMAP 的 id 本身就带
 // "imap:" 前缀，所以它的 key 长这样（前缀出现两次是对的，别"修正"）：
 //   "imap:me@example.com:imap:123"
