@@ -150,9 +150,11 @@ MailOperations{
   path: '/api/gmail/messages/<messageId>/attachment',
   method: 'POST',
   body: { email: '<账户>', attachmentId: '<附件 id>' },
-  save_to: '<工作目录>/发票/_inbox/<原文件名>'
+  save_to: '<工作目录>/发票/_inbox/<邮件 id>_<原文件名>'
 }
 ```
+
+**`_inbox/` 里的文件名前面加上邮件 id**（去掉 `:` 这类文件名里不能用的字符，`imap:123` → `imap123`）。两个理由：不同邮件的附件经常同名（好几家开票平台都叫 `电子发票.pdf`），不加前缀会互相覆盖、静默丢票；中断之后也还能从文件名看出它来自哪封邮件——第 3 步判定「同一张票的两种载体」要靠这个。
 
 不带 `save_to` 时**工具会直接拒绝这次调用**并给出可操作的错误（大意：响应含大块 base64，
 请用同样的 path/method/body 加上 `save_to` 重来）——不是截断、不是降级，是一次白跑。判据是
@@ -187,9 +189,19 @@ IMAP 的两个坑：`messageId` 用 `"imap:<uid>"` 形式（列表返回的 `id`
 
 解析结果必须包含 `extractedBy`（`ofd-xml` / `text-layer` / `vision`）与 `confidence`（0–1）。
 
-**同一张票的两种载体：先 OFD，后 PDF。** 开票平台经常把同一张票的 `.ofd` 和 `.pdf` 一起发——同一封邮件里、去掉扩展名后同名的两个附件就是这种情况。先解析 OFD：它给出结构化来源（`invoice-extract` 的来源 ①/②，置信度 1.0 / 0.9）且四个必填字段齐全，就以它为准，PDF 不必再解析；OFD 只剩页文本或解析失败，才去解析 PDF，取置信度高的一方。两份都解析了而字段不一致时，以结构化来源为准，把分歧记进 `.index/raw/<sha256>.json`。实测：一批里三张航空电子行程单的 PDF 没有文字层，只能视觉识别（0.75，全进了待复核），而同一封邮件里的 OFD 带着开票系统写出的完整字段——本可以直接 1.0，税额拆分也不会算错。
+**同一张票的两种载体：先 OFD，后 PDF。** 开票平台经常把同一张票的 `.ofd` 和 `.pdf` 一起发。**是不是同一张票以解析结果为准**：同一封邮件里的两个文件解析出相同的去重主键（第 4 步），就是同一张票的两种载体。文件名只是解析前的提示——去掉扩展名同名的一对大概率是同票，但附件名五花八门（实测有 `<名>.pdf` 配 `<名>.ofd_查阅需OFD阅读器.ofd`），只看文件名会漏配。
+
+按载体分三种情况：
+
+1. **OFD 给出结构化来源**（`invoice-extract` 的来源 ①/②，置信度 1.0 / 0.9）且四个必填字段齐全 → 以它为准。PDF 有文字层就取出发票号码确认是同一张；没有文字层、而这封邮件里 OFD 与 PDF 各只有一份时，直接认定是同票，不必为了确认去做视觉识别。
+2. **OFD 只剩页文本** → 与 PDF 各自解析，取置信度高的一方。
+3. **OFD 什么都读不出**（纯图形：没有结构化数据，也没有页文本）→ 这封邮件里只有一张候选票时，改读 PDF，这份 OFD 作为它的伴随载体，**不隔离**；邮件里有多张票、分不清它属于哪一张时才隔离，`.reason.txt` 写清「OFD 无可读内容，无法确认对应哪张发票」。
+
+两份都完整解析了而字段不一致时，以结构化来源为准，把分歧记进 `.index/raw/<sha256>.json`。实测：一批里三张航空电子行程单的 PDF 没有文字层，只能视觉识别（0.75，全进了待复核），而同一封邮件里的 OFD 带着开票系统写出的完整字段——本可以直接 1.0，税额拆分也不会算错。
 
 两种载体在 `files.json` 里各占一条：主件记解析结果，另一份的「去向」写成同票的伴随载体并指向主件的 sha256，重跑时哈希命中就知道它已处理过。
+
+**用户要求「按新规则重新解析」时**（比如技能升级后想让旧票吃到新规则），对指定范围的文件跳过 `files.json` 缓存重新解析，新结果按 `invoice-extract`「用脚本批量处理时」的第 2 条合并进已有记录：只补全不清空，两边都有值且不同时取置信度高的一方。
 
 ### 第 4 步 · 去重（Dedupe）
 
@@ -344,6 +356,8 @@ IMAP 的两个坑：`messageId` 用 `"imap:<uid>"` 形式（列表返回的 `id`
 
 一封邮件里有多个附件时，逐个附件走完 1–7，全部走完才走第 8 步。
 
+**有伴随载体时**：主件走完第 6 步之后，把伴随载体复制到同一个归档目录（同名、换成它自己的扩展名），写它在 `files.json` 里的条目（去向 = 伴随载体，指向主件的 sha256），然后第 7 步才把两份 `_inbox/` 原件一起删掉。
+
 ### 发票记录字段
 
 **必填**：`invoiceDate`（`YYYY-MM-DD`）、`sellerName`、`totalAmount`（价税合计），
@@ -352,7 +366,9 @@ IMAP 的两个坑：`messageId` 用 `"imap:<uid>"` 形式（列表返回的 `id`
 三者齐全但确实找不到任何唯一编号时，按去重主键第 4 条走兜底键入账并标「待复核」，
 **不因为「没有发票号码」就隔离**——隔离的判据是「日期 / 销售方 / 价税合计里有抽不到的」。
 
-**选填**：`invoiceCode`、`invoiceType`、`buyerName`、`buyerTaxId`、`sellerTaxId`、`amountExcludingTax`、`taxAmount`、`taxRate`、`items[]`、`checkCode`、`currency`（默认 `CNY`）、`isVoid`
+**选填**：`invoiceCode`、`invoiceType`、`buyerName`、`buyerTaxId`、`sellerTaxId`、`amountExcludingTax`、`taxAmount`、`otherCharges`、`taxRate`、`items[]`、`checkCode`、`currency`（默认 `CNY`）、`isVoid`
+
+`otherCharges` 是票面上既不属于增值税计税依据、也不是增值税税额的收费之和，目前只有电子发票（航空运输电子客票行程单）用得上（民航发展基金 + 其他税费）。有了它，`amountExcludingTax + taxAmount + otherCharges = totalAmount` 对每一种票都成立，事后也能只凭 `ledger.json` 复核勾稽。
 
 **溯源（必填）**：`sourceEmailId`、`sourceEmailSubject`、`sourceFrom`、`sourceReceivedAt`、`sourceAttachmentName`、`fileSha256`、`archivedPath`、`format`（`pdf`/`ofd`/`image`）、`extractedBy`、`confidence`、`extractedAt`
 
@@ -371,7 +387,8 @@ IMAP 的两个坑：`messageId` 用 `"imap:<uid>"` 形式（列表返回的 `id`
 
 按顺序，命中即停：
 
-1. 文本层 / OFD 结构化数据里**同时**出现带标签的发票号码（`发票号码：` 或 OFD 的 `InvoiceNo`）
+1. 文本层 / OFD 结构化数据里**同时**出现带标签的发票号码（`发票号码：`，或 OFD 任一族的发票号码键：
+   `InvoiceNo` / `TaxSupervisionInfo.InvoiceNumber` / `ElectronicInvoiceAirTransportReceiptNumber`）
    与**一个合计项**——`价税合计` 或 `合计金额` 或（`金额` 与 `税额` 成对出现）→ **是**
 2. 只命中票据关键词（`铁路电子客票报销凭证` / `航空运输电子客票行程单` / `定额发票` /
    `出租车` / `网约车` / `通行费` / `客运`）→ **是**，按对应子类型处理
@@ -431,4 +448,5 @@ IMAP 的两个坑：`messageId` 用 `"imap:<uid>"` 形式（列表返回的 `id`
    列成「已入账但原件丢失」。
 
 如果 `.index/` 整个丢了但归档目录还在：整份索引按第 2 条的办法从归档目录重建，同样只能恢复
-票面字段，溯源字段留空并在报告里注明。
+票面字段，溯源字段留空并在报告里注明。同名的几个载体按「先 OFD」定主件：能读出结构化数据的那一份是主件，
+其余是伴随载体。
