@@ -58,7 +58,8 @@ metadata:
 | `.pdf` 有可用文字层 | `Read` 直接抽文本 | `text-layer` | 0.9 起 |
 | `.pdf` 无文字层，或文字层抽出的内容不足以判定 | 无文字层时 `Read` 自动渲染成图；有垃圾文字层时显式 `pdf_mode:"render"` + `pages` | `vision` | 0.7 起 |
 | `.jpg` / `.png` / `.webp` | 直接 `Read` 图片路径，你自己看 | `vision` | 0.7 起 |
-| `.xml`，空文件或根元素不是 `EInvoice` | 不作为解析来源；同封邮件有别的载体时当它们的伴随载体（见 `invoice-workflow` 第 3 步） | — | — |
+| `.xml`，空文件 | 丢弃：不归档、不隔离，`files.json` 记「空文件，丢弃」（见 `invoice-workflow` 第 3 步） | — | — |
+| `.xml`，根元素不是 `EInvoice` | 不作为解析来源；同封邮件有别的载体时当它们的伴随载体（见 `invoice-workflow` 第 3 步） | — | — |
 
 不需要 Python，不需要安装任何东西，`Read` 一个工具全包。
 
@@ -165,7 +166,7 @@ GoodsInfos.GoodsInfo[1].Item = 餐费
 | `TotalAmountExcludingTax` · `TaxAmount` · `TaxRate` | `amountExcludingTax` · `taxAmount` · `taxRate` | **票面不印这三项**，只有结构化数据里有；税率是小数（`0.09`），写成 `9%` |
 | `IssueParty` · `IssuePartyCode` | `sellerName` · `sellerTaxId` | 实测都是空元素（输出里只有 `IssueParty@nil = true`），票面也不印销售方——两项留 `null`，不算缺失（见 `invoice-workflow`「发票记录字段」）；哪天有值了照录 |
 | `TypeOfBusiness` | 不入记录 | 实测都是 `售`。出现别的值（退票、改签之类）时标「待复核」，备注写「业务类型为 <值>」——这类票的金额口径未经实测 |
-| `NumberOfOriginalInvoice` · `AmountRefunded` · `FareOfOriginalRailwayTicket` · `Remarks` | 不入记录（`Remarks` 记备注） | 退票、改签相关字段，实测都为空；有值时与 `TypeOfBusiness` 一起标「待复核」，和红字发票的关系未经实测 |
+| `NumberOfOriginalInvoice` · `AmountRefunded` · `FareOfOriginalRailwayTicket` · `Remarks` | 不入记录（`Remarks` 记备注） | 退票、改签相关字段，实测都为空。有值时照录进备注，与 `TypeOfBusiness` 一起标「待复核」；票价为负时按红字发票处理，`NumberOfOriginalInvoice` 有值就用它当 `redLetterOf`——这层关系未经实测，所以同时标「待复核」 |
 | `ETicketNumber` | 不入记录 | 电子客票号，**不是**发票号码 |
 | `Name` · `IdNumber` | 不入记录 | 乘车人姓名与证件号，个人信息 |
 | `DepartureStation` · `DestinationStation` · `TrainNumber` · `TravelDate` · `DepartureTime` · `SeatLevel` · `Carriage` · `Seat` 等 | 不入记录 | 行程信息与 C 族一样不入记录，需要时看归档的原件 |
@@ -278,7 +279,7 @@ PDF 文本抽取的结果里常出现 `\x00`（未映射字形），位置多在
 | 出租车 / 网约车 | 网约车通常是标准数电票，正常处理；车牌与里程在备注里。**卷式与机打的出租车票、通行费票、部分定额票票面上只写「金额」「合计」，从不出现「价税合计」四个字**——按 `invoice-workflow` 的判定阶梯第 1 条，合计项认「价税合计 / 合计金额 /（金额+税额）」中的任意一种，别因为找不到「价税合计」就把它判成非发票 |
 | 定额发票 | 只有代码 + 号码 + 面额，没有明细也没有税额；走兜底主键 |
 | 作废票 | 文本里出现 `作废` / `已作废` → `isVoid: true`。**文本里没有不代表没作废**，作废戳可能是纯图形 |
-| 红字发票 | 数电票开出后不能作废，开错了由销售方开一张**红字发票**冲销原来那张（蓝字发票）。认法，四条满足任一：XML 或 OFD 标引的 `Header.InherentLabel.InIssuType.LabelCode` 为 `N`（这个标签叫「是否蓝字发票标志」，蓝字票是 `Y`，最稳）；备注以「被红冲蓝字数电发票号码：<20 位号码>」开头；XML 有 `RedEInvoice.OriginalInvoiceCode`；价税合计为负、大写以「（负数）」开头（铁路电子客票没有大写金额，只看票价是否为负）。记 `isRedLetter: true`；金额、税额、价税合计**照票面记负数**，不要取绝对值；被冲销的号码记进 `redLetterOf`：备注里写的不是 20 位数电号码（比如冲的是旧版税控票，写的是代码加号码）就照原样记；备注和 XML 都拿不到号码时留空并标「待复核」——**是不是红字票看 `isRedLetter`，不看 `redLetterOf` 有没有值**。它不是作废票，`isVoid` 保持 `false`。只有某一明细行是负数的是折扣行，不是红字发票 |
+| 红字发票 | 数电票开出后不能作废，开错了由销售方开一张**红字发票**冲销原来那张（蓝字发票）。认法，四条满足任一：XML 或 OFD 标引的 `Header.InherentLabel.InIssuType.LabelCode` 为 `N`（这个标签叫「是否蓝字发票标志」，蓝字票是 `Y`，最稳）；备注以「被红冲蓝字数电发票号码：<20 位号码>」开头；XML 有 `RedEInvoice.OriginalInvoiceCode`；价税合计为负、大写以「（负数）」开头（铁路电子客票没有大写金额，只看票价是否为负）。记 `isRedLetter: true`；金额、税额、价税合计**照票面记负数**，不要取绝对值；被冲销的号码记进 `redLetterOf`：数电蓝字票记 20 位号码；冲的是旧版税控票（备注写的是发票代码加号码）时写成 `<代码>-<号码>`，与归档文件名里旧版票的写法相同，`invoice-ledger` 按同样的形式去匹配蓝字票；备注和 XML 都拿不到号码时留空并标「待复核」——**是不是红字票看 `isRedLetter`，不看 `redLetterOf` 有没有值**。它不是作废票，`isVoid` 保持 `false`。只有某一明细行是负数的是折扣行，不是红字发票 |
 | 免税 / 不征税 | `taxRate` 原样记 `免税`；`taxAmount == 0` 且 `amountExcludingTax == totalAmount` 是正常的 |
 | 外币结算 | 票面仍是人民币，原币与汇率写在备注里。照抄备注，**不做换算**，`currency` 保持票面币种（也就是 `CNY`）——所以台账里不会出现非 CNY 的记录，外币信息只存在于备注 |
 
@@ -289,7 +290,7 @@ PDF 文本抽取的结果里常出现 `\x00`（未映射字形），位置多在
 | 失败态 | 现象 | 处置 |
 | --- | --- | --- |
 | 加密带口令 | `Read` 返回 `PDF 文件无法解析: <底层报错>` + 换行 + `可能原因: 文件损坏、加密或非标准格式`（半角冒号，中间夹着底层报错原文）。**加密没有被单独识别，这是一条通用兜底**——同一句话也会用于损坏和非标准格式，别只凭它就断定是加密 | 隔离。若底层报错里出现 `password` 之类字样，在收尾里告诉用户这张票带口令，口令通常写在**邮件正文**里（常见为发票号码后 6 位或手机号后 6 位），请他自己解密后重新放进 `_inbox/`。**不要**尝试猜口令 |
-| 文件损坏 / 空文件 | 同一句兜底报错 | 隔离，`.reason.txt` 写「文件损坏或为空，字节数 N」，并把底层报错原文一并抄进去（那是唯一能区分这三种失败的线索） |
+| 文件损坏 / 空文件（空 XML 除外，它直接丢弃） | 同一句兜底报错 | 隔离，`.reason.txt` 写「文件损坏或为空，字节数 N」，并把底层报错原文一并抄进去（那是唯一能区分这三种失败的线索） |
 | 能读但内容为空 | 抽出来只有几个字符 | 隔离，写「文本层为空，可能是纯图形 PDF 但渲染也未产出可读内容」 |
 | 判定为非发票 | 命中负向关键词或缺关键标签 | 隔离，写清是哪一条判据命中的 |
 

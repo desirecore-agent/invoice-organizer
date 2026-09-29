@@ -176,7 +176,7 @@ grep -rInE "[0-9]{15,20}|@[a-z0-9.-]+\.[a-z]{2,}|/Users/[a-z]+|¥[0-9]" . --excl
 | 工作目录 | 需要 `ManageWorkDirs` 登记一个工作目录放归档、台账与报告 |
 | 审批模式 | 默认模式下每次文件写入与邮件调用都弹审批卡片；**无人值守需要用户自己把本 Agent 切到 `allow-all`** |
 | Python（可选） | 解析 PDF / OFD / XML / 扫描件不需要装任何东西；只有 `.xlsx` 台账需要 `openpyxl` + `pandas`，不可用时降级为 UTF-8 BOM 的 CSV 并如实报告降级 |
-| 解压工具（系统自带） | `.zip` 附件由 `skills/invoice-workflow/scripts/unpack-zip.sh` 解，依次尝试 `unzip`、`python3`、bsdtar；macOS / Windows 自带，精简 Linux 可能都没有，那时压缩包记进 `unprocessed` 交给用户 |
+| 解压工具（系统自带） | `.zip` 附件由 `skills/invoice-workflow/scripts/unpack-zip.sh` 解，依次尝试 `unzip`、`python3`、bsdtar（Windows 上显式找 `System32\tar.exe`），前一种解不开就换下一种；macOS / Windows 自带其中至少一种，精简 Linux 可能都没有，那时 zip 进 `_quarantine/` 交给用户 |
 
 **不做发票真伪验证**——没有官方验真通道，Agent 只做格式与算术校验，并引导用户自行到国家税务总局平台查验。这条口径不能松，改文档时别写成「可验真」。
 
