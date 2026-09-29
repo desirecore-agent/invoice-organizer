@@ -86,7 +86,11 @@ TaxInclusiveTotalAmount = ¥4449.00
 GoodsInfos.GoodsInfo[1].Item = 餐费
 ```
 
-`Buyer/BuyerName`、`GoodsInfos/GoodsInfo[]` 这类斜杠写法**在输出里一个都不存在**，别按它匹配。来源 ① 与 ② 走同一套展平，键名同构，所以下表两种来源通用：
+`Buyer/BuyerName`、`GoodsInfos/GoodsInfo[]` 这类斜杠写法**在输出里一个都不存在**，别按它匹配。
+
+**键名不止一族，取决于开票系统，不取决于来源编号。** 同一批真实邮件里实测见过三族，下面三张表各对应一族——先看键名前缀认出是哪一族，再查对应的表。部分键名末尾带 `.ObjectData`，匹配时忽略这个后缀。三张表都对不上时按字段语义匹配（键名本身就是英文语义词，`…SellerName` 就是销售方名称），**不要直接退回页文本**：结构化字段就在输出里，退回页文本是白白降级。
+
+**A 族**：`InvoiceNo` / `Buyer.*` / `Seller.*`（2020 年式样的内嵌附件，以及部分数电票的标引）
 
 | 键 | 记录字段 | 哪些来源有 |
 | --- | --- | --- |
@@ -101,9 +105,42 @@ GoodsInfos.GoodsInfo[1].Item = 餐费
 | `TaxTotalAmount` | `taxAmount` | ①② |
 | `GoodsInfos.GoodsInfo[n].{Item,Specification,MeasurementDimension,Price,Quantity,Amount,TaxScheme,TaxAmount}` | `items[]` | **只有 ①**；② 只有零散的 `Item` / `Price` / `Quantity`，凑不出逐行结构 |
 
+**B 族**：`TaxSupervisionInfo.*` + `EInvoiceData.*`（数电票的标引，来源 ②；实测多个省份税务局开具的票都是这一族）
+
+| 键 | 记录字段 | 备注 |
+| --- | --- | --- |
+| `TaxSupervisionInfo.InvoiceNumber` | `invoiceNumber` | |
+| `TaxSupervisionInfo.IssueTime` | `invoiceDate` | 中文日期格式，转成 `YYYY-MM-DD` |
+| `EInvoiceData.SellerInformation.SellerName` · `…SellerIdNum` | `sellerName` · `sellerTaxId` | |
+| `EInvoiceData.BuyerInformation.BuyerName` · `…BuyerIdNum` | `buyerName` · `buyerTaxId` | |
+| `EInvoiceData.BasicInformation.TotalAmWithoutTax` | `amountExcludingTax` | |
+| `EInvoiceData.BasicInformation.TotalTaxAm` | `taxAmount` | |
+| `EInvoiceData.BasicInformation.TotalTax-includedAmount` | `totalAmount` | **实测多数只有一个 `¥`**，按下面硬规则 1 处理 |
+| `EInvoiceData.BasicInformation.TotalTax-includedAmountInChinese` | 不入记录 | 大写价税合计，用来校验小写 |
+| `Header.InherentLabel.EInvoiceType.LabelName` | `invoiceType` | |
+| `EInvoiceData.IssuItemInformation.{ItemName,Amount,TaxRate,ComTaxAm}` | `items[]` | 单行明细可直接用；多行时与页文本对过再写 |
+
+**C 族**：航空运输电子客票行程单的内嵌附件（来源 ①，置信度 1.0）
+
+| 键 | 记录字段 | 备注 |
+| --- | --- | --- |
+| `ElectronicInvoiceAirTransportReceiptNumber` | `invoiceNumber` | 20 位发票号码 |
+| `IssueDate` | `invoiceDate` | 已经是 `YYYY-MM-DD` |
+| `NameOfSeller`（与 `IssueParty` 相同） | `sellerName` | 没有销售方税号字段，票面也不印，`sellerTaxId` 为空是正常的 |
+| `NameOfPurchaser` · `UnifiedSocialCreditCodeOfPurchaser` | `buyerName` · `buyerTaxId` | |
+| `TotalAmount` | `totalAmount` | |
+| `VatTaxAmount` · `VatRate` | `taxAmount` · `taxRate` | 税率是小数（`0.09`），写成 `9%` |
+| `Fare` + `FuelSurcharge` | `amountExcludingTax` | 两项相加才是计税依据，见「特殊票据」 |
+| `CivilAviationDevelopmentFund` · `OtherTaxes` | 不入记录 | **不属于**计税依据，只在勾稽时加上 |
+| `VerificationCode` | `checkCode` | |
+| `ETicketNumber` | 不入记录 | 电子客票号码，**不是**发票号码 |
+| `PassengerName` · `ValidIdNumber` | 不入记录 | 乘机人个人信息，记录与台账里都不写 |
+
+**三族取完值都做同一个自检**：`amountExcludingTax + taxAmount = totalAmount`（航空票再加民航发展基金与其他税费），并与大写金额一致。对不上说明认错了族或取错了键，回头查，不要带着矛盾的数入账。
+
 #### 三条硬规则，每条都对应一种会把钱算错的写法
 
-1. **`totalAmount` 只认 `TaxInclusiveTotalAmount`。** 标引式（来源 ②）的金额常带 `¥` 前缀——票面上「¥」和「4449.00」是两个页面文字对象，解引用后被按顺序拼成 `¥4449.00`。写进记录前把货币符号与千分位逗号剥掉，只留纯数字。
+1. **`totalAmount` 只认价税合计键（A 族 `TaxInclusiveTotalAmount`、B 族 `TotalTax-includedAmount`、C 族 `TotalAmount`），而且剥掉符号后必须是数字。** 票面上「¥」和「4449.00」是两个页面文字对象：有的开票系统两个都标引，解引用后拼成 `¥4449.00`；**也有的只标引了 `¥` 那一个**，取到的值就只剩一个货币符号（B 族实测多数如此，数字在页面上，只是没被标引指到）。写进记录前剥掉货币符号与千分位逗号；剥完为空或不是数字 → 当这个键缺失处理：用 `不含税金额 + 税额` 求和，**与大写金额折算值一致才采用**，两者对不上就回页文本取 `（小写）¥xxxx`。绝不把 `¥`、`0` 或空串写进 `totalAmount`。
 
 2. **绝不把 `DocInfo/CustomDatas` 的「合计金额」当 `totalAmount`。** 那是**不含税金额**。实测一张 2024 数电票：CustomDatas 写 `合计金额: 4197.17`、`合计税额: 251.83`，而同一张票的**价税合计是 ¥4449.00**——照抄就是每张票少记一个税额，还带着高置信度混进合计。CustomDatas 里压根没有价税合计这一项。正确对应：`合计金额` → `amountExcludingTax`，`合计税额` → `taxAmount`；`totalAmount` 去标引段取 `TaxInclusiveTotalAmount`，或回页文本取 `价税合计（大写）… （小写）¥xxxx`。两个都拿不到就按必填字段缺失隔离，不要拿合计金额顶替。
 
@@ -201,7 +238,8 @@ PDF 文本抽取的结果里常出现 `\x00`（未映射字形），位置多在
 | --- | --- |
 | 铁路电子客票（新版） | 走数电票版式，正常处理 |
 | 铁路电子客票报销凭证（旧版） | 没有 `发票号码：` 标签；抬头下的 21 位电子客票号当 `invoiceNumber`，`confidence` 上限 0.9 |
-| 航空运输电子客票行程单 | 没有发票号码，用 `电子客票号码`；`invoiceDate` 取**填开日期**不是航班日期；`印刷序号` 进 `checkCode` |
+| 电子发票（航空运输电子客票行程单） | 票面标题就是这几个字，右上角有 **20 位发票号码**——它才是 `invoiceNumber`，`电子客票号码` 不是。`invoiceDate` 取**填开日期**不是航班日期；`验证码` 进 `checkCode`。**`amountExcludingTax` = 票价 + 燃油附加费**（计税依据），`taxAmount` = 增值税税额；**民航发展基金与其他税费不属于计税依据**，不能并进 `amountExcludingTax`。勾稽式是 `票价 + 燃油附加费 + 增值税税额 + 民航发展基金 + 其他税费 = 合计`，普通的「金额 + 税额 = 价税合计」对它不成立——用「合计 − 税额」倒推不含税金额会把基金一并算进去（实测每张多出整整一笔基金），而且倒推出来的数永远能过勾稽，错了也没人发现。OFD 版带 C 族内嵌附件，有它就用它 |
+| 航空运输电子客票行程单（旧版，无发票号码） | 没有发票号码，用 `电子客票号码`；`invoiceDate` 取**填开日期**不是航班日期；`印刷序号` 进 `checkCode` |
 | 出租车 / 网约车 | 网约车通常是标准数电票，正常处理；车牌与里程在备注里。**卷式与机打的出租车票、通行费票、部分定额票票面上只写「金额」「合计」，从不出现「价税合计」四个字**——按 `invoice-workflow` 的判定阶梯第 1 条，合计项认「价税合计 / 合计金额 /（金额+税额）」中的任意一种，别因为找不到「价税合计」就把它判成非发票 |
 | 定额发票 | 只有代码 + 号码 + 面额，没有明细也没有税额；走兜底主键 |
 | 作废票 | 文本里出现 `作废` / `已作废` → `isVoid: true`。**文本里没有不代表没作废**，作废戳可能是纯图形 |
@@ -227,7 +265,8 @@ PDF 文本抽取的结果里常出现 `\x00`（未映射字形），位置多在
 
 抽完字段后逐条走一遍，任何一条不过都要在记录里留痕：
 
-- `金额 + 税额 = 价税合计`（浮点比较留 0.01 容差）
+- `金额 + 税额 = 价税合计`（浮点比较留 0.01 容差）；航空电子行程单用它自己的勾稽式，见「特殊票据」
+- **票面必印金额与税额的票种**（数电票、增值税发票、航空电子行程单），这两个字段为空**不算通过**——那是抽取失败，不是票面没有：标 `checkFailed`、按勾稽对不上扣分，再按下面「用脚本批量处理时」补抽。只有票面本来就不印税额的（免税 / 不征税票、定额票、卷式出租车票）空着才正常
 - 大写金额与小写金额一致（大写解析可以只做数量级校验，不必逐字）
 - 明细行 `数量 × 单价 = 金额`（多行时求和）
 - 数电票发票号码 20 位纯数字；旧版发票代码 12 位、号码 8 位
@@ -236,11 +275,21 @@ PDF 文本抽取的结果里常出现 `\x00`（未映射字形），位置多在
 
 校验只降置信度、只留标记，**不修改抽出来的值**。票面本身写错的情况真实存在，改数据比留标记危险得多。
 
+**也不许为了让校验通过去倒推一个没抽到的字段**——比如拿「价税合计 − 税额」填 `amountExcludingTax`。倒推出来的数永远能过勾稽，于是勾稽再也发现不了它错了。唯一的例外是硬规则 1 那种：两个独立的票面来源（标引里的不含税金额与税额、大写金额）互相印证之后才采用。
+
 ### 批量解析的顺序
 
 一批文件的处理顺序：先 `FileDigest` 一次性算完所有哈希（一次最多 100 个路径），去掉命中缓存的，再逐个解析。
 
 先算哈希的理由：重复下载在发票场景里非常常见（同一封邮件转发多次、用户手工又存了一份），先去重能省掉大部分解析开销。
+
+#### 用脚本批量处理时
+
+票多的时候写脚本批量抽 PDF 文本层是合理的，但有三条纪律：
+
+1. **OFD 一律用 `Read` 读。** `Read` 走平台的 OFD 解析内核，直接给出三个来源的结构化字段，输出很短；PDF 库读不了 OFD，自己拆包重写解析既慢又会漏掉上面没见过的键名族。
+2. **多轮只补全，不清空。** 后一轮某字段为空而前一轮有值 → 保留前一轮的值；两轮都有值且不同 → 保留置信度高的一方，另一方写进 `.index/raw/<sha256>.json` 备查。实测：第二轮脚本用更弱的正则重新解析 PDF，把第一轮已经抽到的税额覆盖成了空；勾稽又因为字段为空被跳过，一整批里大部分票的税额就这样丢了，没有一条报错。
+3. **写台账前算一次完整率。** `amountExcludingTax`、`taxAmount`、`sellerTaxId`、`buyerTaxId` 各有几条为空，写进收尾报告。必印字段（见形式校验清单）有空缺时，先对这些票逐张用 `Read` 补抽，补不上的逐条标「待复核」，不要带着一列空值出台账。
 
 ### 什么时候值得回看原图
 
