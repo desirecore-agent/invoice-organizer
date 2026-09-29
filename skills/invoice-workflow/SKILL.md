@@ -200,16 +200,15 @@ bash '${SKILL_DIR}/scripts/unpack-zip.sh' \
 - `OK <生成名> <zip 里的原条目路径>`——解出的文件，**和这封邮件的其他附件同等对待**，第 3 步配载体、判定是不是发票都照常走；`sourceAttachmentName` 写 `<zip 附件原名>/<原条目路径>`
 - `SKIP <原条目路径>`——不在白名单里，丢弃
 - `DONE <数量>`——成功
-
-**收下之前核对输出**，任一不符就按整包 `FAIL` 处理：每个 `OK` 行的生成名必须完全匹配 `^<前缀>-[0-9]+\.(pdf|ofd|xml|jpg|jpeg|png)$`；`OK` 行数必须等于 `DONE` 给出的数量；`DONE` 必须是最后一行且只出现一次。原条目路径是发件方写的，脚本已经删掉了其中的换行与制表符，但它仍然只能写进 JSON，不能拿去拼命令。
-
 - `FAIL <原因>`——失败，这次移进 `_inbox/` 的文件已由脚本撤回：zip 移进 `_quarantine/`，`.reason.txt` 抄上原因（它已经在隔离区里、会随 `quarantined` 出现在报告中，**不再**记进 `unprocessed`）。加密的 zip 密码通常写在邮件正文里，请用户自己解开放进 `_inbox/`，**不要猜**；三种方式都解不开的（比如 GBK 编码的中文条目名，`unzip` 在 macOS 上解不开时脚本会自动换 `python3` 再试），同样请用户手动解开
+
+**收下之前核对输出**，任一不符就按整包失败处理——先删掉 `_inbox/<前缀>-*`（前缀是生成的，可以放心写进命令），再把 zip 移进 `_quarantine/`：每个 `OK` 行的生成名必须完全匹配 `^<前缀>-[0-9]+\.(pdf|ofd|xml|jpg|jpeg|png)$`；`OK` 行数必须等于 `DONE` 给出的数量；`DONE` 必须是最后一行且只出现一次。原条目路径是发件方写的，脚本已经删掉了其中的换行与制表符，但它仍然只能写进 JSON，不能拿去拼命令。
 
 脚本依次尝试 `unzip`、`python3`、bsdtar，前一种解不开就换下一种；符号链接、条目过多、总大小超限这类安全拒绝不换方式重试。`python3` 要能真正 `import zipfile` 才算有（Windows 的应用商店占位程序不算）；bsdtar 是 macOS 自带的 `tar`，Windows 上脚本会直接去找 `System32\tar.exe`（Git Bash 里 PATH 上的 `tar` 是解不了 zip 的 GNU tar）。三样都没有时报 `FAIL`。Windows 原生程序不受 `ulimit` 约束，单个文件的大小只能靠解完之后的总量检查兜住。
 
 **落盘顺序**：脚本输出 `DONE` 之后，才在 `files.json` 里给 zip 记一条（去向「已解包」，列出生成名与原条目路径）。反过来先记，中途崩溃后重跑会因为哈希命中而不再解包，那几张票就永远丢了。zip 本身不归档，和同一封邮件的其他原件一起在第 7 步从 `_inbox/` 删掉。`.index/tmp/` 下的残留都是中断的解包，重跑时直接删掉，不当成附件扫描。
 
-zip 里再套 zip：内层包不在白名单里，会被 `SKIP` 丢掉——看到 `SKIP` 的是 `.zip` / `.rar` / `.7z`，在 `unprocessed` 里记一条（内层包已经随临时目录删掉，只有这一条记录能提醒用户），请用户解开后放进 `_inbox/`。
+zip 里再套 zip：内层包不在白名单里，会被 `SKIP` 丢掉——看到 `SKIP` 的是 `.zip` / `.rar` / `.7z`，在 `unprocessed` 里记一条（内层包已经随临时目录删掉，只有这一条记录能提醒用户）。`__MACOSX/` 下的条目和 `._` 开头的文件是 macOS 打包时带进去的元数据，脚本直接 `SKIP`，不用管，请用户解开后放进 `_inbox/`。
 
 **处理不了的附件要落盘。** 手里没有文件、隔离区也不会出现的那些——下载失败、没下载的 `.rar` / `.7z`、zip 里被 `SKIP` 的内层压缩包——在 `ledger.json` 的 `unprocessed` 数组里记一条：`{emailKey, emailSubject, receivedAt, attachmentName, reason, retryable, firstSeenAt, lastTriedAt, attempts}`（`emailKey` 与 `emails.json` 的 key 同形；报告要引用邮件主题和收件时间，所以一并存下；`retryable` 表示再跑一次有没有可能成功，下载失败是 `true`，格式问题是 `false`）。同一个 `emailKey` + `attachmentName` 只有一条，再次失败时更新 `lastTriedAt` 与 `attempts`，不追加。解不开的 zip 已经在 `_quarantine/` 里，不重复记。`retryable: true` 的那封邮件**不写进** `emails.json`，下次收集到它时重试，成功后删掉这一条；`retryable: false` 的，这封邮件的其他附件照常处理完就写 `emails.json`，这一条一直留着，直到用户说已经手动处理。月度报告与每次收尾都把 `unprocessed` 全部列出来。用户说「重试未下载的附件」时，对其中 `retryable: true` 的逐条回邮箱重新下载，不必重扫整个时间范围。旧版本写的 `ledger.json` 没有这个键，当它是空数组，写回时补上。
 
@@ -346,7 +345,7 @@ zip 里再套 zip：内层包不在白名单里，会被 `SKIP` 丢掉——看�
   "invoices": { "<发票主键>": { /* 单张发票的记录 */ } },
   "suspectedDuplicates": [ /* 疑似重复，交人工确认，不并入 invoices */ ],
   "quarantined": [ /* 隔离项摘要，与 _quarantine/ 里的 .reason.txt 对应 */ ],
-  "unprocessed": [ /* 处理不了的附件：下载失败、解不开的压缩包；见第 2 步 */ ] }
+  "unprocessed": [ /* 手里没有文件的附件：下载失败、没下载的 rar/7z、zip 里的内层压缩包；见第 2 步 */ ] }
 
 // .index/files.json —— 文件 sha256 → 解析结果
 { "schemaVersion": 1, "updatedAt": "<ISO8601>",

@@ -101,13 +101,17 @@ with zipfile.ZipFile(z) as f:
         sys.exit(5)
     if any(i.flag_bits & 0x1 for i in infos):   # 加密条目
         sys.exit(4)
+    # zipfile 不会写出超过声明大小的数据，所以声明大小之和就是硬上限；
+    # Windows 原生 python 不受 ulimit 约束，靠这一条挡住压缩炸弹
+    if sum(i.file_size for i in infos) > 100 * 1024 * 1024:
+        sys.exit(6)
     f.extractall(t)   # extractall 会去掉 .. 与绝对路径
 PY
   ) </dev/null >/dev/null 2>&1
 }
 
 only="${UNPACK_ZIP_ONLY:-}"
-ok=0; last='本机没有可用的 unzip、python3 或 bsdtar'
+ok=0; last='没有能读这个包的解压方式（本机缺 unzip / python3 / bsdtar，或都读不了它）'
 for m in unzip python3 bsdtar; do
   [ -z "$only" ] || [ "$only" = "$m" ] || continue
   clean_tmp || fail '无法创建临时目录'
@@ -125,6 +129,7 @@ for m in unzip python3 bsdtar; do
       [ $rc -eq 0 ] && { ok=1; break; }
       [ $rc -eq 3 ] && fail "条目超过 $MAX_ENTRIES 个"
       [ $rc -eq 5 ] && fail '含符号链接条目'
+      [ $rc -eq 6 ] && fail '条目声明的总大小超过 100MB'
       last='解压失败（可能加密、损坏或单个文件过大）' ;;
     bsdtar)
       tb=$(bsdtar_bin) || continue
@@ -144,6 +149,8 @@ total=$(du -sk "$T" | cut -f1)
 n=0
 while IFS= read -r -d '' f; do
   rel=$(printf '%s' "${f#"$T"/}" | LC_ALL=C tr -d '\001-\037\177')
+  # macOS「压缩」顺带打进去的元数据（__MACOSX/、._ 开头的文件）不是发票
+  case "/$rel" in */__MACOSX/*|*/._*) say SKIP "$rel"; continue ;; esac
   ext=$(printf '%s' "${f##*.}" | tr 'A-Z' 'a-z')
   case "$ext" in
     pdf|ofd|xml|jpg|jpeg|png) ;;
