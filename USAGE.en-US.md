@@ -51,7 +51,7 @@ Every monthly report opens with a one-line conclusion before any detail, and eac
 
 **Red-letter invoices** (the negative invoice a seller issues to cancel a fully-digital invoice issued in error) are posted at their printed negative amounts and offset the original they cancel. The original is marked `已红冲` (fully reversed) or `部分红冲` (partially reversed) in the ledger, and the report lists each pair so you know the reversed portion can no longer be reimbursed.
 
-None of this requires you to install anything. Only the `.xlsx` ledger may need Python with `openpyxl` and `pandas`; when they are missing it writes a UTF-8 BOM CSV instead (so non-Latin text opens correctly in Excel) and tells you it degraded.
+None of this requires you to install anything. `.zip` attachments are unpacked with the system's own `unzip` / `tar` (macOS and Windows both ship a version that handles zip; a minimal Linux environment may have neither, in which case the archive is listed for you to unpack by hand). Only the `.xlsx` ledger may need Python with `openpyxl` and `pandas`; when they are missing it writes a UTF-8 BOM CSV instead (so non-Latin text opens correctly in Excel) and tells you it degraded.
 
 ## About approvals (read this before expecting unattended runs)
 

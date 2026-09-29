@@ -9,7 +9,7 @@
 
 DesireCore 官方市场里「发票整理助手」Agent 的**内容仓库**。它把散落在邮箱和本地的发票收拢成一本可对账、可复用的台账，并对每一条记录的来源负责。
 
-与本组织下其它 Agent（`feishu-orchestrator` / `dingtalk-workspace`）的关键差异：**它不编排任何第三方 CLI**。能力全部来自 DesireCore 平台自带的工具（Mail Service、`Read` 的 PDF/OFD 解析、文件工具）与本仓库自带的 4 个私有技能。因此：
+与本组织下其它 Agent（`feishu-orchestrator` / `dingtalk-workspace`）的关键差异：**它不编排任何第三方 CLI**。能力全部来自 DesireCore 平台自带的工具（Mail Service、`Read` 的 PDF/OFD 解析、文件工具）、系统自带的解压工具与本仓库自带的 4 个私有技能。因此：
 
 - 没有「用户要先装一个第三方二进制」这道前置
 - `NOTICE` 文件不需要——没有第三方内容需要署名（`LICENSE` 仍然必需，见 §4）
@@ -175,7 +175,8 @@ grep -rInE "[0-9]{15,20}|@[a-z0-9.-]+\.[a-z]{2,}|/Users/[a-z]+|¥[0-9]" . --excl
 | 邮箱授权 | Gmail / Outlook / IMAP，用户一次性自行授权；没有就停在 preflight 并说明缺什么 |
 | 工作目录 | 需要 `ManageWorkDirs` 登记一个工作目录放归档、台账与报告 |
 | 审批模式 | 默认模式下每次文件写入与邮件调用都弹审批卡片；**无人值守需要用户自己把本 Agent 切到 `allow-all`** |
-| Python（可选） | 解析 PDF / OFD / 扫描件不需要装任何东西；只有 `.xlsx` 台账需要 `openpyxl` + `pandas`，不可用时降级为 UTF-8 BOM 的 CSV 并如实报告降级 |
+| Python（可选） | 解析 PDF / OFD / XML / 扫描件不需要装任何东西；只有 `.xlsx` 台账需要 `openpyxl` + `pandas`，不可用时降级为 UTF-8 BOM 的 CSV 并如实报告降级 |
+| 解压工具（系统自带） | `.zip` 附件由 `skills/invoice-workflow/scripts/unpack-zip.sh` 解，依次尝试 `unzip`、`python3`、bsdtar；macOS / Windows 自带，精简 Linux 可能都没有，那时压缩包记进 `unprocessed` 交给用户 |
 
 **不做发票真伪验证**——没有官方验真通道，Agent 只做格式与算术校验，并引导用户自行到国家税务总局平台查验。这条口径不能松，改文档时别写成「可验真」。
 
