@@ -7,7 +7,7 @@
     "char": "票",
     "color": "green"
   },
-  "version": "1.0.4",
+  "version": "1.0.5",
   "llm": {
     "routingMode": "smart",
     "smart": {
