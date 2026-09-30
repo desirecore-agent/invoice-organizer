@@ -7,13 +7,15 @@
 输出（逐行）：
   ERROR <发票主键>  <问题>     必须改：改完重跑，直到没有 ERROR
   WARN  <发票主键>  <问题>     逐条看一眼，确认是票面如此就不用改
-  SUMMARY records=<n> errors=<n> warnings=<n> xml_checked=<n>
+  SUMMARY records=<n> errors=<n> warnings=<n> xml_checked=<n> pending_claims=<n>
+                               pending_claims 是还没领到的待领取张数（按整本台账派生）
 退出码：没有 ERROR 为 0，有 ERROR 为 1，用法或目录不对为 2。
 
 只读：不修改任何文件。检查的是 ledger.json 里已经写下的值——模型抽取时漏看、错拼、
 写错类型的，这里用确定性的规则再过一遍。XML 来自邮件，属于不可信输入：超过 2MB、
 带 DOCTYPE / ENTITY 声明的一律不解析，只报 WARN。
 """
+import datetime
 import json
 import re
 import sys
@@ -41,8 +43,12 @@ def report(level, key, message):
     else:
         warnings += 1
     # 控制字符去掉，一条问题只占一行
-    clean = lambda v: re.sub(r"[\x00-\x1f\x7f]", " ", str(v))
-    print(f"{level}\t{clean(key)}\t{clean(message)}")
+    print(f"{level}\t{clean(key, 80)}\t{clean(message, 400)}")
+
+
+def clean(v, limit):
+    s = re.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]", " ", str(v))
+    return s if len(s) <= limit else s[:limit] + "…(截断)"
 
 
 def dec(value):
@@ -51,16 +57,20 @@ def dec(value):
     if isinstance(value, bool) or isinstance(value, (dict, list)):
         raise TypeError
     try:
-        return Decimal(str(value).replace("¥", "").replace(",", "").strip())
+        d = Decimal(str(value).replace("¥", "").replace("￥", "").replace(",", "").strip())
     except InvalidOperation:
         raise TypeError
+    if not d.is_finite() or d.adjusted() > 12:
+        raise TypeError
+    return d
 
 
 def load_records(ledger):
     if isinstance(ledger.get("invoices"), dict):
         return list(ledger["invoices"].items())
     if isinstance(ledger.get("records"), list):  # 历史形态，原样读
-        return [(r.get("invoiceNumber") or f"#{i}", r) for i, r in enumerate(ledger["records"])]
+        return [((r.get("invoiceNumber") if isinstance(r, dict) else None) or f"#{i}", r)
+                for i, r in enumerate(ledger["records"])]
     return []
 
 
@@ -86,18 +96,29 @@ def find_text(root, *path):
 def parse_einvoice_xml(path):
     """返回 (fields, problem)。problem 非空时 fields 为 None。"""
     try:
-        raw = path.read_bytes()
+        if not path.is_file():
+            return None, "不是普通文件，未读取"
+        if path.stat().st_size > MAX_XML_BYTES:
+            return None, "XML 超过 2MB，未解析"
+        with path.open("rb") as fh:
+            raw = fh.read(MAX_XML_BYTES + 1)
     except OSError as exc:
         return None, f"读不了 XML：{exc.strerror}"
     if not raw.strip():
         return None, "EMPTY"
     if len(raw) > MAX_XML_BYTES:
         return None, "XML 超过 2MB，未解析"
-    head = raw[:4096].upper()
-    if b"<!DOCTYPE" in head or b"<!ENTITY" in raw.upper():
+    try:
+        text = raw.decode("utf-16") if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return None, "XML 不是 UTF-8 / UTF-16，未解析"
+    if not text.strip():
+        return None, "EMPTY"
+    upper = text.upper()
+    if "<!DOCTYPE" in upper or "<!ENTITY" in upper:
         return None, "XML 带 DOCTYPE / ENTITY 声明，未解析"
     try:
-        root = ET.fromstring(raw)
+        root = ET.fromstring(text)
     except ET.ParseError:
         return None, "XML 格式错误"
     if local(root.tag) != "EInvoice":
@@ -125,12 +146,28 @@ def parse_einvoice_xml(path):
     except TypeError:
         pass
     fields["isRedLetter"] = bool(in_issu == "N" or red_code or m or negative)
+    shapes = {"invoiceNumber": r"\d{8,21}", "redLetterOf": r"\d{20}", "invoiceDate": r"\d{4}-\d{2}-\d{2}",
+              "sellerTaxId": r"[0-9A-Za-z]{15,20}", "buyerTaxId": r"[0-9A-Za-z]{15,20}"}
+    for name, pattern in shapes.items():
+        v = fields.get(name)
+        if v is not None and not re.fullmatch(pattern, v):
+            fields[name] = None
     return fields, None
 
 
 def is_legacy(record):
     kind = str(record.get("invoiceType") or "")
+    if kind.strip() == "航空行程单" or "旧版" in kind:
+        return True
     return any(t in kind for t in LEGACY_TYPES)
+
+
+def inside(p, root):
+    try:
+        p.resolve().relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def check_record(key, r, base, all_numbers):
@@ -142,11 +179,31 @@ def check_record(key, r, base, all_numbers):
     if not (isinstance(date, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date)):
         report("ERROR", key, f"invoiceDate 不是 YYYY-MM-DD：{date!r}")
         date = None
+    else:
+        try:
+            if datetime.date.fromisoformat(date) > datetime.date.today():
+                report("WARN", key, f"开票日期 {date} 在未来：多半是日期抽错了，重核票面")
+        except ValueError:
+            report("ERROR", key, f"开票日期 {date} 不是合法日期")
+            date = None
     number = r.get("invoiceNumber")
+    if number is not None and not isinstance(number, str):
+        report("ERROR", key, f"invoiceNumber 必须写成字符串（现在是 {type(number).__name__}），数字会丢掉前导零、长号码会变形")
+        number = str(number)
+    must_print = not is_legacy(r) and any(t in kind for t in ("数电", "专票", "普票", "增值税", "电子发票", "铁路电子客票", "航空"))
     if not number:
-        report("ERROR", key, "invoiceNumber 为空")
+        if must_print:
+            report("ERROR", key, "invoiceNumber 为空：这类票面一定印着号码，按 invoice-extract 形式校验清单重取")
+        else:
+            report("WARN", key, "invoiceNumber 为空：按兜底键入账的票要标待复核")
     if not r.get("sellerName") and not railway:
         report("ERROR", key, "sellerName 为空（只有铁路电子客票可以不载销售方）")
+    for tax_field in ("sellerTaxId", "buyerTaxId"):
+        tid = r.get(tax_field)
+        if tid and not re.fullmatch(r"[0-9A-Za-z]{15}|[0-9A-Za-z]{18}|[0-9A-Za-z]{20}", str(tid).strip()):
+            report("WARN", key, f"{tax_field} 不是 15 / 18 / 20 位：{str(tid)[:40]}")
+    if r.get("currency") not in (None, "", "CNY"):
+        report("WARN", key, f"currency 是 {r.get('currency')!r}：票面都以人民币计价，外币只照抄进备注")
 
     # 金额类型
     values = {}
@@ -170,6 +227,8 @@ def check_record(key, r, base, all_numbers):
 
     # 勾稽
     a, t, o = values["amountExcludingTax"], values["taxAmount"], values["otherCharges"]
+    if must_print and "铁路" not in kind and (a is None or t is None):
+        report("ERROR", key, "票面必印的金额或税额为空：抽取失败，补抽；补不上标待复核（免税票税额记 0）")
     if a is not None and t is not None and total is not None:
         if abs(a + t + (o or 0) - total) > TOLERANCE:
             report("ERROR", key, f"勾稽不平：{a} + {t} + {o or 0} ≠ {total}")
@@ -191,7 +250,7 @@ def check_record(key, r, base, all_numbers):
     if red is True:
         of = r.get("redLetterOf")
         if not of:
-            report("ERROR", key, "isRedLetter 为 true，redLetterOf 为空——回源数据取被冲销的蓝字号码")
+            report("WARN", key, "isRedLetter 为 true，redLetterOf 为空：回源（备注、XML）再找一次被冲销的蓝字号码，确实没有就标待复核")
         elif of not in all_numbers:
             report("WARN", key, f"被冲销的蓝字票 {of} 不在本台账里，报告里要提醒核对以前是否报销过")
 
@@ -212,9 +271,9 @@ def check_record(key, r, base, all_numbers):
         path.resolve().relative_to(archive_root)
     except ValueError:
         # 工作目录搬过时，旧的绝对路径还指着原来的位置；本目录里有同一相对路径的文件就接着查
-        tail = str(archived).replace("\\", "/").split("/归档/", 1)
+        tail = str(archived).replace("\\", "/").rsplit("/归档/", 1)
         moved = archive_root / tail[1] if len(tail) == 2 and ".." not in tail[1].split("/") else None
-        if moved is not None and moved.exists():
+        if moved is not None and inside(moved, archive_root) and moved.is_file():
             moved_paths.append(key)
             path = moved
         else:
@@ -224,6 +283,9 @@ def check_record(key, r, base, all_numbers):
         report("ERROR", key, f"归档文件不存在：{path.name}")
     xml_path = path.with_suffix(".xml")
     if not xml_path.exists():
+        return 0
+    if not inside(xml_path, archive_root):
+        report("WARN", key, f"{xml_path.name} 解析后不在本目录 归档/ 下（符号链接？），未读取")
         return 0
     fields, problem = parse_einvoice_xml(xml_path)
     if problem == "EMPTY":
@@ -236,6 +298,10 @@ def check_record(key, r, base, all_numbers):
         return 0
     for name in ("invoiceNumber", "invoiceDate", "sellerTaxId", "buyerTaxId", "redLetterOf"):
         want, got = fields.get(name), r.get(name)
+        if isinstance(got, int) and not isinstance(got, bool):
+            got = str(got)  # 号码写成数字的问题上面已经报过，这里按字符串比，免得重复报
+        if name.endswith("TaxId") and want and isinstance(got, str) and want.strip().upper() == got.strip().upper():
+            continue
         if want and want != got:
             report("ERROR", key, f"{name} 与 XML 不一致：台账 {got!r}，XML {want!r}")
     for name in ("amountExcludingTax", "taxAmount", "totalAmount"):
@@ -250,7 +316,7 @@ def check_record(key, r, base, all_numbers):
     return 1
 
 
-def check_claims(ledger, all_numbers):
+def check_claims(ledger, all_numbers, triples):
     """待领取按整本台账派生：号码已经入账就算领到了，这里只统计还没领到的，并查重复条目。"""
     seen = set()
     pending = 0
@@ -265,7 +331,15 @@ def check_claims(ledger, all_numbers):
             continue
         if number:
             seen.add(number)
-        if item.get("dismissed") is True or (number and number in all_numbers):
+        if item.get("dismissed") is True or (number and str(number) in all_numbers):
+            continue
+        try:
+            triple = (claim.get("sellerName"), dec(claim.get("totalAmount")), claim.get("invoiceDate"))
+        except TypeError:
+            triple = None
+        if triple is not None and triple[1] is not None and triple in triples:
+            if number:
+                report("WARN", key, "领票页上的号码与入账的票不一致（销售方、价税合计、开票日期都相同，按已领取算）")
             continue
         pending += 1
         if not number:
@@ -274,6 +348,11 @@ def check_claims(ledger, all_numbers):
 
 
 def main():
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass
     if len(sys.argv) != 2:
         print("用法：python3 check-ledger.py <发票目录>", file=sys.stderr)
         return 2
@@ -283,12 +362,27 @@ def main():
         print(f"找不到 {ledger_path}", file=sys.stderr)
         return 2
     try:
-        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         print(f"ledger.json 读不了或不是合法 JSON：{exc}", file=sys.stderr)
         return 2
+    if not isinstance(ledger, dict) or not (isinstance(ledger.get("invoices"), dict) or isinstance(ledger.get("records"), list)):
+        print("ledger.json 顶层既不是 invoices 字典也不是旧形态 records 数组", file=sys.stderr)
+        return 2
     records = load_records(ledger)
-    all_numbers = {str(r.get("invoiceNumber")) for _, r in records if r.get("invoiceNumber")}
+    all_numbers, triples = set(), set()
+    for k, r in records:
+        if not isinstance(r, dict):
+            continue
+        all_numbers.add(str(k))
+        if r.get("invoiceNumber"):
+            all_numbers.add(str(r["invoiceNumber"]))
+            if r.get("invoiceCode"):
+                all_numbers.add(f"{r['invoiceCode']}-{r['invoiceNumber']}")
+        try:
+            triples.add((r.get("sellerName"), dec(r.get("totalAmount")), r.get("invoiceDate")))
+        except TypeError:
+            pass
     xml_checked = 0
     for key, r in records:
         if not isinstance(r, dict):
@@ -297,7 +391,7 @@ def main():
         if r.get("isVoid") is True:
             continue
         xml_checked += check_record(str(key), r, base, all_numbers)
-    pending_claims = check_claims(ledger, all_numbers)
+    pending_claims = check_claims(ledger, all_numbers, triples)
     if moved_paths:
         sample = "、".join(moved_paths[:3]) + ("等" if len(moved_paths) > 3 else "")
         report("WARN", f"{len(moved_paths)} 条", f"archivedPath 指向别的目录（工作目录搬过？如 {sample}），本目录 归档/ 里有同名文件，已按它检查；方便时把这些路径改成本目录下的")

@@ -154,6 +154,7 @@ ManageSchedule{
 加载技能 invoice-workflow 与 invoice-ledger。
 工作目录：<绝对路径>/发票
 读取 .index/ledger.json，取上一个自然月（按开票日期归属）的记录，
+重建前先跑 invoice-ledger 的自检脚本 check-ledger.py，能改的回源改掉，改不了的 ERROR 列进摘要；
 全量重建 台账.xlsx（依赖不可用时改出带 UTF-8 BOM 的 CSV），重建前先备份。
 再按 invoice-ledger 的模板写 报告/<上月 YYYY-MM>.md。
 完成后用 SendUserMessage 把台账文件和一句话摘要发给用户；
