@@ -380,10 +380,18 @@ def check_claims(ledger, all_numbers, triples):
 def check_tmp(base):
     """.index/tmp 在整理任务收尾前应当已经清空：列表存页里是时间段内全部邮件的正文（含与发票无关的私人邮件）。
 
-    邮件规则触发的增量入账、定时出账可能与前台整理并行，共用这个目录——10 分钟内还有写入的只报 WARN。
+    邮件规则触发的增量入账、定时出账可能与前台整理并行，共用这个目录。按第一层的每个条目分别判断：
+    10 分钟内还有写入的单独报 WARN，旧的报 ERROR——一个新文件不能把别的旧残留一起掩盖掉。
     """
     key = ".index/tmp"
     tmp = base / ".index" / "tmp"
+    now = time.time()
+
+    def stamp(path):
+        # ctime 在 POSIX 上是 inode 变更时间，解包写回的旧 mtime 改不了它；晚于现在的 mtime 不算
+        st = os.lstat(path)
+        return max(st.st_ctime, st.st_mtime) if st.st_mtime <= now + 60 else st.st_ctime
+
     try:
         if tmp.is_symlink():
             report("WARN", key, ".index/tmp 是符号链接：只删链接本身（不要带末尾斜杠去删，那会删掉它指向的目录）")
@@ -393,41 +401,53 @@ def check_tmp(base):
         if not tmp.is_dir():
             report("ERROR", key, ".index/tmp 不是目录：删掉它")
             return
-        pages = others = 0
+        try:
+            entries = list(os.scandir(tmp))
+        except OSError:
+            report("WARN", key, ".index/tmp 读不了，没法检查里面还有什么")
+            return
         unreadable = []
-        newest = 0.0
-        capped = False
-        for root, _dirs, files in os.walk(tmp, onerror=unreadable.append):  # 不跟符号链接
-            for name in files:
-                try:
-                    newest = max(newest, os.lstat(os.path.join(root, name)).st_mtime)
-                except OSError:
-                    pass
-            if Path(root).relative_to(tmp).parts[:1] == ("mail-list",):
-                pages += len(files)
-            else:
-                others += len(files)
-            if pages + others > 100000:
-                capped = True
+        fresh, stale = [], []
+        counted = 0
+        for entry in entries:
+            try:
+                newest, files_n = stamp(entry.path), 0
+                if entry.is_dir(follow_symlinks=False):
+                    for root, _dirs, files in os.walk(entry.path, onerror=unreadable.append):  # 不跟符号链接
+                        newest = max(newest, stamp(root))
+                        for name in files:
+                            files_n += 1
+                            try:
+                                newest = max(newest, stamp(os.path.join(root, name)))
+                            except OSError:
+                                pass
+                        if counted + files_n > 100000:
+                            break
+                else:
+                    files_n = 1
+            except OSError:
+                unreadable.append(entry.path)
+                continue
+            counted += files_n
+            label = f"{entry.name}（{files_n} 个文件）" if entry.name != "mail-list" else f"mail-list（列表存页 {files_n} 个，里面是时间段内全部邮件的正文，含私人邮件）"
+            (fresh if now - newest < 600 else stale).append(label)
+            if counted > 100000:
                 break
     except (RecursionError, OSError) as exc:
         report("WARN", key, f"没法完整检查 .index/tmp（{type(exc).__name__}），请人工看一眼里面还有什么")
         return
     if unreadable:
-        report("WARN", key, f".index/tmp 里有 {len(unreadable)} 个子目录读不了，没数到")
-    if not pages and not others:
-        return
-    at_least = "至少 " if capped else ""
-    parts = []
-    if pages:
-        parts.append(f"列表存页 {at_least}{pages} 个（里面是时间段内全部邮件的正文，含私人邮件）")
-    if others:
-        parts.append(f"中间文件 {at_least}{others} 个")
-    what = "、".join(parts)
-    if newest and time.time() - newest < 600:
-        report("WARN", key, f"{what}，10 分钟内还有写入：可能是邮件规则的增量入账或另一轮整理正在用，这次不删")
-    else:
-        report("ERROR", key, f"{what}：整理任务收尾前删掉 .index/tmp 目录（不带末尾斜杠）")
+        report("WARN", key, f".index/tmp 里有 {len(unreadable)} 处读不了，没数到")
+    # 列表存页含全部邮件正文，排在最前，不被「等 N 项」省略掉
+    stale.sort(key=lambda label: not label.startswith("mail-list"))
+    fresh.sort(key=lambda label: not label.startswith("mail-list"))
+    if stale:
+        sample = "、".join(stale[:5]) + (f" 等 {len(stale)} 项" if len(stale) > 5 else "")
+        target = "删掉上面列出的这些" if fresh else "删掉 .index/tmp 目录（不带末尾斜杠）"
+        report("ERROR", key, f"残留：{sample}。整理任务收尾前{target}")
+    if fresh:
+        sample = "、".join(fresh[:5]) + (f" 等 {len(fresh)} 项" if len(fresh) > 5 else "")
+        report("WARN", key, f"10 分钟内还有写入：{sample}。是这一轮自己写的（列表存页、批量脚本与中间文件）照样删掉；不是的，可能是邮件规则的增量入账或另一轮整理正在用，这次不删")
 
 
 def main():
