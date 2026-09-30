@@ -285,7 +285,7 @@ bash '${SKILL_DIR}/scripts/unpack-zip.sh' \
 
 脚本依次尝试 `unzip`、`python3`、bsdtar，前一种解不开就换下一种；符号链接、条目过多、总大小超限这类安全拒绝不换方式重试。`python3` 要能真正 `import zipfile` 才算有（Windows 的应用商店占位程序不算）；bsdtar 是 macOS 自带的 `tar`，Windows 上脚本会直接去找 `System32\tar.exe`（Git Bash 里 PATH 上的 `tar` 是解不了 zip 的 GNU tar）。三样都没有时报 `FAIL`。Windows 原生程序不受 `ulimit` 约束，单个文件的大小只能靠解完之后的总量检查兜住。
 
-**落盘顺序**：脚本输出 `DONE` 之后，才在 `files.json` 里给 zip 记一条（去向「已解包」，列出生成名与原条目路径）。反过来先记，中途崩溃后重跑会因为哈希命中而不再解包，那几张票就永远丢了。zip 本身不归档，和同一封邮件的其他原件一起在第 7 步从 `_inbox/` 删掉。`.index/tmp/` 下的残留都是中断的解包，重跑时直接删掉，不当成附件扫描。
+**落盘顺序**：脚本输出 `DONE` 之后，才在 `files.json` 里给 zip 记一条（去向「已解包」，列出生成名与原条目路径）。反过来先记，中途崩溃后重跑会因为哈希命中而不再解包，那几张票就永远丢了。zip 本身不归档，和同一封邮件的其他原件一起在第 7 步从 `_inbox/` 删掉。`.index/tmp/` 下的东西不当成附件扫描；重跑时照 `invoice-ledger` 自检的口径删残留：10 分钟内有写入、又不是这一轮自己写的先不删（可能是邮件规则的增量入账或另一轮整理正在用）。
 
 zip 里再套 zip：内层包不在白名单里，会被 `SKIP` 丢掉——看到 `SKIP` 的是 `.zip` / `.rar` / `.7z`，在 `unprocessed` 里记一条（内层包已经随临时目录删掉，只有这一条记录能提醒用户）。`__MACOSX/` 下的条目和 `._` 开头的文件是 macOS 打包时带进去的元数据，脚本直接 `SKIP`，不用管，请用户解开后放进 `_inbox/`。
 
@@ -409,7 +409,7 @@ zip 里再套 zip：内层包不在白名单里，会被 `SKIP` 丢掉——看�
 ├── _quarantine/                解析失败、判定为非发票、待领取的领票页（+ 同名 .reason.txt）；同票的其他载体不放这里
 └── .index/
     ├── coverage.json           各邮箱、各文件夹的缓存已补齐到哪天（coveredFrom）与进行中的补拉进度（backfill），见第 2 步
-    ├── tmp/                    临时目录：解包 zip（<zip 哈希>/）与列表存页（mail-list/），用完即删；中断残留重跑时直接删掉
+    ├── tmp/                    临时目录：解包 zip（<zip 哈希>/）、列表存页（mail-list/）与批量脚本的中间文件，用完即删；整理任务收尾前删掉，10 分钟内有写入、又不是这一轮自己写的先不删
     ├── ledger.json             发票主键 → 记录（主索引）
     ├── emails.json             已处理邮件 id
     ├── files.json              文件 sha256 → 解析结果

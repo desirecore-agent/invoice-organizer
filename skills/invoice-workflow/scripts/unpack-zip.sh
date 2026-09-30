@@ -146,6 +146,7 @@ done
 total=$(du -sk "$T" | cut -f1)
 [ "$total" -le "$MAX_TOTAL_KB" ] || fail "解出总大小 ${total}KB，超过 ${MAX_TOTAL_KB}KB"
 
+[ -d "$T" ] || fail '临时目录在解包途中被删'
 n=0
 while IFS= read -r -d '' f; do
   rel=$(printf '%s' "${f#"$T"/}" | LC_ALL=C tr -d '\001-\037\177')
@@ -162,6 +163,9 @@ while IFS= read -r -d '' f; do
   moved+=("$dst")
   printf 'OK\t%s\t%s\n' "${dst##*/}" "$rel"
 done < <(find "$T" -type f -print0 | LC_ALL=C sort -z)
+# 进程替换里的 find 失败不会让循环报错：临时目录要是在上面这段途中被删，这里会拿到 0 个文件、
+# 输出 DONE 0，zip 被当成「已解包」记下再删掉——里面的票就静默丢了
+[ -d "$T" ] || fail '临时目录在解包途中被删'
 
 rm -rf "$T"
 say DONE "$n"

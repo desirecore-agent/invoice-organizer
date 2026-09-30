@@ -11,14 +11,18 @@
                                pending_claims 是还没领到的待领取张数（按整本台账派生）
 退出码：没有 ERROR 为 0，有 ERROR 为 1，用法或目录不对为 2。
 
+另查 .index/tmp 残留（主键列写 .index/tmp）。
+
 只读：不修改任何文件。检查的是 ledger.json 里已经写下的值——模型抽取时漏看、错拼、
 写错类型的，这里用确定性的规则再过一遍。XML 来自邮件，属于不可信输入：超过 2MB、
 带 DOCTYPE / ENTITY 声明的一律不解析，只报 WARN。
 """
 import datetime
 import json
+import os
 import re
 import sys
+import time
 import xml.etree.ElementTree as ET
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -373,6 +377,87 @@ def check_claims(ledger, all_numbers, triples):
     return pending
 
 
+def check_tmp(base):
+    """.index/tmp 在整理任务收尾前应当已经清空：列表存页里是时间段内全部邮件的正文（含与发票无关的私人邮件）。
+
+    邮件规则触发的增量入账、定时出账可能与前台整理并行，共用这个目录。按第一层的每个条目分别判断：
+    10 分钟内还有写入的单独报 WARN，旧的报 ERROR——一个新文件不能把别的旧残留一起掩盖掉。
+    """
+    key = ".index/tmp"
+    tmp = base / ".index" / "tmp"
+    now = time.time()
+
+    def stamp(path):
+        # ctime 在 POSIX 上是 inode 变更时间，解包写回的旧 mtime 改不了它；晚于现在的 mtime 不算
+        st = os.lstat(path)
+        return max(st.st_ctime, st.st_mtime) if st.st_mtime <= now + 60 else st.st_ctime
+
+    try:
+        if tmp.is_symlink():
+            report("WARN", key, ".index/tmp 是符号链接：只删链接本身（不要带末尾斜杠去删，那会删掉它指向的目录）")
+            return
+        if not tmp.exists():
+            return
+        if not tmp.is_dir():
+            report("ERROR", key, ".index/tmp 不是目录：删掉它")
+            return
+        try:
+            entries = list(os.scandir(tmp))
+        except OSError:
+            report("WARN", key, ".index/tmp 读不了，没法检查里面还有什么")
+            return
+        unreadable = []
+        fresh, stale = [], []
+        counted = 0
+        capped = False
+        for entry in entries:
+            try:
+                newest, files_n = stamp(entry.path), 0
+                if entry.is_dir(follow_symlinks=False):
+                    for root, _dirs, files in os.walk(entry.path, onerror=unreadable.append):  # 不跟符号链接
+                        newest = max(newest, stamp(root))
+                        for name in files:
+                            files_n += 1
+                            try:
+                                newest = max(newest, stamp(os.path.join(root, name)))
+                            except OSError:
+                                pass
+                        if counted + files_n > 100000:
+                            capped = True
+                            break
+                else:
+                    files_n = 1
+            except (OSError, RecursionError):
+                unreadable.append(entry.path)
+                continue
+            counted += files_n
+            if files_n == 0:
+                continue  # 只剩空目录，里面没有东西
+            short = entry.name if len(entry.name) <= 40 else entry.name[:40] + "…"
+            n_text = f"{'至少 ' if capped else ''}{files_n}"
+            label = f"{short}（{n_text} 个文件）" if entry.name != "mail-list" else f"mail-list（列表存页 {n_text} 个，里面是时间段内全部邮件的正文，含私人邮件）"
+            (fresh if now - newest < 600 else stale).append(label)
+            if capped:
+                break
+    except (RecursionError, OSError) as exc:
+        report("WARN", key, f"没法完整检查 .index/tmp（{type(exc).__name__}），请人工看一眼里面还有什么")
+        return
+    if unreadable:
+        report("WARN", key, f".index/tmp 里有 {len(unreadable)} 处读不了，没数到")
+    # 列表存页含全部邮件正文，排在最前，不被「等 N 项」省略掉
+    stale.sort(key=lambda label: not label.startswith("mail-list"))
+    fresh.sort(key=lambda label: not label.startswith("mail-list"))
+    if stale:
+        sample = "、".join(stale[:5]) + (f" 等 {len(stale)} 项" if len(stale) > 5 else "")
+        target = ("删掉 .index/tmp 里除下一行 WARN 列出的以外的全部条目" if fresh
+                  else "删掉 .index/tmp 目录（不带末尾斜杠）")
+        # 指令放在列表前面：长文件名会让整行被截断，不能截掉要做的事
+        report("ERROR", key, f"整理任务收尾前{target}。残留：{sample}")
+    if fresh:
+        report("WARN", key, "10 分钟内还有写入（全部列出）：是这一轮自己写的（列表存页、批量脚本与中间文件）照样删掉；"
+               "不是的，可能是邮件规则的增量入账或另一轮整理正在用，这次不删。" + "、".join(fresh))
+
+
 def main():
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -420,6 +505,7 @@ def main():
             continue
         xml_checked += check_record(str(key), r, base, all_numbers)
     pending_claims = check_claims(ledger, all_numbers, triples)
+    check_tmp(base)
     if moved_paths:
         sample = "、".join(moved_paths[:3]) + ("等" if len(moved_paths) > 3 else "")
         report("WARN", f"{len(moved_paths)} 条", f"archivedPath 指向别的目录（工作目录搬过？如 {sample}），本目录 归档/ 里有同名文件，已按它检查；方便时把这些路径改成本目录下的")
