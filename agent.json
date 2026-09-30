@@ -7,12 +7,13 @@
     "char": "票",
     "color": "green"
   },
-  "version": "1.0.8",
+  "version": "1.0.9",
   "llm": {
     "routingMode": "smart",
     "smart": {
       "profile": {
-        "tier": "flagship"
+        "tier": "flagship",
+        "reasoning": "medium"
       }
     },
     "maxRetryDelayMs": 32000

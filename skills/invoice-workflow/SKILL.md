@@ -424,7 +424,7 @@ zip 里再套 zip：内层包不在白名单里，会被 `SKIP` 丢掉——看�
 { "schemaVersion": 1, "updatedAt": "<ISO8601>",
   "invoices": { "<发票主键>": { /* 单张发票的记录 */ } },
   "suspectedDuplicates": [ /* 疑似重复，交人工确认，不并入 invoices */ ],
-  "quarantined": [ /* 隔离项摘要，与 _quarantine/ 里的 .reason.txt 对应 */ ],
+  "quarantined": [ /* 隔离项摘要，与 _quarantine/ 里的 .reason.txt 对应；领票二维码页多带 kind:"claim" 与 claim:{invoiceNumber, sellerName, invoiceDate, totalAmount}，见 invoice-extract「特殊票据」 */ ],
   "unprocessed": [ /* 手里没有文件的附件：下载失败、没下载的 rar/7z、zip 里的内层压缩包；见第 2 步 */ ] }
 
 // .index/files.json —— 文件 sha256 → 解析结果
@@ -489,6 +489,8 @@ zip 里再套 zip：内层包不在白名单里，会被 `SKIP` 丢掉——看�
 一封邮件里有多个附件时，逐个附件走完 1–7，全部走完才走第 8 步。
 
 **有伴随载体时**：主件走完第 6 步之后，把伴随载体复制到同一个归档目录（同名、换成它自己的扩展名），写它在 `files.json` 里的条目（去向 = 伴随载体，指向主件的 sha256），然后第 7 步才把这张票的几份 `_inbox/` 原件一起删掉。
+
+**待领取的票领到之后**：之后入账的发票号码与 `quarantined` 里某条 `kind: "claim"` 的 `claim.invoiceNumber` 相同，就在那一条里加 `claimedBy: <发票主键>`，报告与异常表不再把它列为待领取；领票页图片留在 `_quarantine/` 不用动。
 
 ### 发票记录字段
 
