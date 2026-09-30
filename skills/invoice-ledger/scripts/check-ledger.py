@@ -17,6 +17,7 @@
 """
 import datetime
 import json
+import os
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -373,6 +374,27 @@ def check_claims(ledger, all_numbers, triples):
     return pending
 
 
+def check_tmp(base):
+    """.index/tmp/ 用完即删：列表存页里是时间段内全部邮件的正文（含与发票无关的私人邮件）。"""
+    tmp = base / ".index" / "tmp"
+    if not tmp.is_dir() or tmp.is_symlink():
+        return
+    pages = others = 0
+    for root, dirs, files in os.walk(tmp):  # 不跟符号链接
+        in_list = "mail-list" in Path(root).relative_to(tmp).parts
+        for _ in files:
+            if in_list:
+                pages += 1
+            else:
+                others += 1
+        if pages + others > 100000:
+            break
+    if pages:
+        report("ERROR", ".index/tmp", f"列表存页还有 {pages} 个：里面是时间段内全部邮件的正文（含私人邮件），候选清单建完就该删——删掉整个 .index/tmp/")
+    if others:
+        report("ERROR", ".index/tmp", f"临时目录还有 {others} 个中间文件：出台账前删掉整个 .index/tmp/（解包、列表存页、批量解析的中间结果都放这里，用完即删）")
+
+
 def main():
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -420,6 +442,7 @@ def main():
             continue
         xml_checked += check_record(str(key), r, base, all_numbers)
     pending_claims = check_claims(ledger, all_numbers, triples)
+    check_tmp(base)
     if moved_paths:
         sample = "、".join(moved_paths[:3]) + ("等" if len(moved_paths) > 3 else "")
         report("WARN", f"{len(moved_paths)} 条", f"archivedPath 指向别的目录（工作目录搬过？如 {sample}），本目录 归档/ 里有同名文件，已按它检查；方便时把这些路径改成本目录下的")
