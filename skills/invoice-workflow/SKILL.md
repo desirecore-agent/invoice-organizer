@@ -374,7 +374,7 @@ zip 里再套 zip：内层包不在白名单里，会被 `SKIP` 丢掉——看�
 
 ### 第 6 步 · 台账（Ledger）
 
-加载 `invoice-ledger`。台账**每次全量重建**，数据源是 `.index/ledger.json` 而不是重新解析文件。重建前先把现有台账另存为 `台账.bak.<扩展名>`。
+加载 `invoice-ledger`。台账**每次全量重建**，数据源是 `.index/ledger.json` 而不是重新解析文件。**重建前先跑 `invoice-ledger` 自带的自检脚本 `check-ledger.py`**，有 `ERROR` 就回源重取、改完重跑（回源之后仍然如此的按 `invoice-ledger` 的说法保留原值、标待复核、列进异常表，不为消掉 `ERROR` 改数）；再把现有台账另存为 `台账.bak.<扩展名>`。
 
 ### 第 7 步 · 报告（Report）
 
