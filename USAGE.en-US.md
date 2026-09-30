@@ -30,7 +30,7 @@ One new directory under your work directory:
 ├── 报告/2024-08.md     (reports; invoices spanning months write 报告/2020-08_2024-09.md)
 ├── 归档/2024/08/20240815_<seller>_1959.98_24312000000000020002.pdf   (archive, by year/month)
 ├── _inbox/            downloaded, not yet processed
-├── _quarantine/       parse failures and non-invoices, each with a .reason.txt
+├── _quarantine/       parse failures, non-invoices, and invoice-claim QR pages whose original is still to be claimed, each with a .reason.txt
 └── .index/            dedupe index — do not edit by hand
 ```
 
