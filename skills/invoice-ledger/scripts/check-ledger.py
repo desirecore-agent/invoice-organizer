@@ -409,6 +409,7 @@ def check_tmp(base):
         unreadable = []
         fresh, stale = [], []
         counted = 0
+        capped = False
         for entry in entries:
             try:
                 newest, files_n = stamp(entry.path), 0
@@ -422,16 +423,21 @@ def check_tmp(base):
                             except OSError:
                                 pass
                         if counted + files_n > 100000:
+                            capped = True
                             break
                 else:
                     files_n = 1
-            except OSError:
+            except (OSError, RecursionError):
                 unreadable.append(entry.path)
                 continue
             counted += files_n
-            label = f"{entry.name}（{files_n} 个文件）" if entry.name != "mail-list" else f"mail-list（列表存页 {files_n} 个，里面是时间段内全部邮件的正文，含私人邮件）"
+            if files_n == 0:
+                continue  # 只剩空目录，里面没有东西
+            short = entry.name if len(entry.name) <= 40 else entry.name[:40] + "…"
+            n_text = f"{'至少 ' if capped else ''}{files_n}"
+            label = f"{short}（{n_text} 个文件）" if entry.name != "mail-list" else f"mail-list（列表存页 {n_text} 个，里面是时间段内全部邮件的正文，含私人邮件）"
             (fresh if now - newest < 600 else stale).append(label)
-            if counted > 100000:
+            if capped:
                 break
     except (RecursionError, OSError) as exc:
         report("WARN", key, f"没法完整检查 .index/tmp（{type(exc).__name__}），请人工看一眼里面还有什么")
@@ -443,11 +449,13 @@ def check_tmp(base):
     fresh.sort(key=lambda label: not label.startswith("mail-list"))
     if stale:
         sample = "、".join(stale[:5]) + (f" 等 {len(stale)} 项" if len(stale) > 5 else "")
-        target = "删掉上面列出的这些" if fresh else "删掉 .index/tmp 目录（不带末尾斜杠）"
-        report("ERROR", key, f"残留：{sample}。整理任务收尾前{target}")
+        target = ("删掉 .index/tmp 里除下一行 WARN 列出的以外的全部条目" if fresh
+                  else "删掉 .index/tmp 目录（不带末尾斜杠）")
+        # 指令放在列表前面：长文件名会让整行被截断，不能截掉要做的事
+        report("ERROR", key, f"整理任务收尾前{target}。残留：{sample}")
     if fresh:
-        sample = "、".join(fresh[:5]) + (f" 等 {len(fresh)} 项" if len(fresh) > 5 else "")
-        report("WARN", key, f"10 分钟内还有写入：{sample}。是这一轮自己写的（列表存页、批量脚本与中间文件）照样删掉；不是的，可能是邮件规则的增量入账或另一轮整理正在用，这次不删")
+        report("WARN", key, "10 分钟内还有写入（全部列出）：是这一轮自己写的（列表存页、批量脚本与中间文件）照样删掉；"
+               "不是的，可能是邮件规则的增量入账或另一轮整理正在用，这次不删。" + "、".join(fresh))
 
 
 def main():
