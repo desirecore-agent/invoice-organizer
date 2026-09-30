@@ -409,7 +409,7 @@ zip 里再套 zip：内层包不在白名单里，会被 `SKIP` 丢掉——看�
 ├── _quarantine/                解析失败、判定为非发票、待领取的领票页（+ 同名 .reason.txt）；同票的其他载体不放这里
 └── .index/
     ├── coverage.json           各邮箱、各文件夹的缓存已补齐到哪天（coveredFrom）与进行中的补拉进度（backfill），见第 2 步
-    ├── tmp/                    临时目录：解包 zip（<zip 哈希>/）与列表存页（mail-list/），用完即删；中断残留重跑时直接删掉
+    ├── tmp/                    临时目录：解包 zip（<zip 哈希>/）、列表存页（mail-list/）与批量脚本的中间文件，用完即删；整理任务收尾前删掉整个目录，中断残留重跑时直接删掉
     ├── ledger.json             发票主键 → 记录（主索引）
     ├── emails.json             已处理邮件 id
     ├── files.json              文件 sha256 → 解析结果

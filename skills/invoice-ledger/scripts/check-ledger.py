@@ -11,6 +11,8 @@
                                pending_claims 是还没领到的待领取张数（按整本台账派生）
 退出码：没有 ERROR 为 0，有 ERROR 为 1，用法或目录不对为 2。
 
+另查 .index/tmp 残留（主键列写 .index/tmp）。
+
 只读：不修改任何文件。检查的是 ledger.json 里已经写下的值——模型抽取时漏看、错拼、
 写错类型的，这里用确定性的规则再过一遍。XML 来自邮件，属于不可信输入：超过 2MB、
 带 DOCTYPE / ENTITY 声明的一律不解析，只报 WARN。
@@ -20,6 +22,7 @@ import json
 import os
 import re
 import sys
+import time
 import xml.etree.ElementTree as ET
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -375,24 +378,56 @@ def check_claims(ledger, all_numbers, triples):
 
 
 def check_tmp(base):
-    """.index/tmp/ 用完即删：列表存页里是时间段内全部邮件的正文（含与发票无关的私人邮件）。"""
+    """.index/tmp 在整理任务收尾前应当已经清空：列表存页里是时间段内全部邮件的正文（含与发票无关的私人邮件）。
+
+    邮件规则触发的增量入账、定时出账可能与前台整理并行，共用这个目录——10 分钟内还有写入的只报 WARN。
+    """
+    key = ".index/tmp"
     tmp = base / ".index" / "tmp"
-    if not tmp.is_dir() or tmp.is_symlink():
-        return
-    pages = others = 0
-    for root, dirs, files in os.walk(tmp):  # 不跟符号链接
-        in_list = "mail-list" in Path(root).relative_to(tmp).parts
-        for _ in files:
-            if in_list:
-                pages += 1
+    try:
+        if tmp.is_symlink():
+            report("WARN", key, ".index/tmp 是符号链接：只删链接本身（不要带末尾斜杠去删，那会删掉它指向的目录）")
+            return
+        if not tmp.exists():
+            return
+        if not tmp.is_dir():
+            report("ERROR", key, ".index/tmp 不是目录：删掉它")
+            return
+        pages = others = 0
+        unreadable = []
+        newest = 0.0
+        capped = False
+        for root, _dirs, files in os.walk(tmp, onerror=unreadable.append):  # 不跟符号链接
+            for name in files:
+                try:
+                    newest = max(newest, os.lstat(os.path.join(root, name)).st_mtime)
+                except OSError:
+                    pass
+            if Path(root).relative_to(tmp).parts[:1] == ("mail-list",):
+                pages += len(files)
             else:
-                others += 1
-        if pages + others > 100000:
-            break
+                others += len(files)
+            if pages + others > 100000:
+                capped = True
+                break
+    except (RecursionError, OSError) as exc:
+        report("WARN", key, f"没法完整检查 .index/tmp（{type(exc).__name__}），请人工看一眼里面还有什么")
+        return
+    if unreadable:
+        report("WARN", key, f".index/tmp 里有 {len(unreadable)} 个子目录读不了，没数到")
+    if not pages and not others:
+        return
+    at_least = "至少 " if capped else ""
+    parts = []
     if pages:
-        report("ERROR", ".index/tmp", f"列表存页还有 {pages} 个：里面是时间段内全部邮件的正文（含私人邮件），候选清单建完就该删——删掉整个 .index/tmp/")
+        parts.append(f"列表存页 {at_least}{pages} 个（里面是时间段内全部邮件的正文，含私人邮件）")
     if others:
-        report("ERROR", ".index/tmp", f"临时目录还有 {others} 个中间文件：出台账前删掉整个 .index/tmp/（解包、列表存页、批量解析的中间结果都放这里，用完即删）")
+        parts.append(f"中间文件 {at_least}{others} 个")
+    what = "、".join(parts)
+    if newest and time.time() - newest < 600:
+        report("WARN", key, f"{what}，10 分钟内还有写入：可能是邮件规则的增量入账或另一轮整理正在用，这次不删")
+    else:
+        report("ERROR", key, f"{what}：整理任务收尾前删掉 .index/tmp 目录（不带末尾斜杠）")
 
 
 def main():
