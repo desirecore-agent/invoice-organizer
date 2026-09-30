@@ -5,7 +5,7 @@
   发票目录：<工作目录>/发票，里面要有 .index/ledger.json
 
 输出（逐行）：
-  ERROR <发票主键>  <问题>     必须改：改完重跑，直到没有 ERROR
+  ERROR <发票主键>  <问题>     回源重取后改掉；回源之后仍然如此的保持原值、标待复核，不为消掉它改数
   WARN  <发票主键>  <问题>     逐条看一眼，确认是票面如此就不用改
   SUMMARY records=<n> errors=<n> warnings=<n> xml_checked=<n> pending_claims=<n>
                                pending_claims 是还没领到的待领取张数（按整本台账派生）
@@ -108,10 +108,17 @@ def parse_einvoice_xml(path):
         return None, "EMPTY"
     if len(raw) > MAX_XML_BYTES:
         return None, "XML 超过 2MB，未解析"
+    # 只认 UTF-8（可带 BOM）与带 BOM 的 UTF-16；UTF-32、无 BOM 的 UTF-16 这类用 UTF-8 也能「解码成功」，
+    # 得到的是夹着 NUL 的另一串字符，下面的声明检查就会失手——所以含 NUL 的一律不解析（XML 1.0 本就不允许 U+0000）
     try:
-        text = raw.decode("utf-16") if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else raw.decode("utf-8-sig")
+        if raw[:2] in (b"\xff\xfe", b"\xfe\xff") and raw[:4] != b"\xff\xfe\x00\x00":
+            text = raw.decode("utf-16")
+        else:
+            text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
         return None, "XML 不是 UTF-8 / UTF-16，未解析"
+    if "\x00" in text:
+        return None, "XML 含 NUL 字符（编码不对或被篡改），未解析"
     if not text.strip():
         return None, "EMPTY"
     upper = text.upper()
@@ -158,6 +165,9 @@ def parse_einvoice_xml(path):
 def is_legacy(record):
     kind = str(record.get("invoiceType") or "")
     if kind.strip() == "航空行程单" or "旧版" in kind:
+        return True
+    # 模型常把票种写成「航空运输电子客票行程单」而不写是不是电子发票；号码不是 20 位的就是旧版纸质行程单
+    if "航空" in kind and not re.fullmatch(r"\d{20}", str(record.get("invoiceNumber") or "")):
         return True
     return any(t in kind for t in LEGACY_TYPES)
 
@@ -227,7 +237,8 @@ def check_record(key, r, base, all_numbers):
 
     # 勾稽
     a, t, o = values["amountExcludingTax"], values["taxAmount"], values["otherCharges"]
-    if must_print and "铁路" not in kind and (a is None or t is None):
+    structured = str(r.get("extractedBy") or "") in ("xml", "ofd-xml")
+    if must_print and ("铁路" not in kind or structured) and (a is None or t is None):
         report("ERROR", key, "票面必印的金额或税额为空：抽取失败，补抽；补不上标待复核（免税票税额记 0）")
     if a is not None and t is not None and total is not None:
         if abs(a + t + (o or 0) - total) > TOLERANCE:
@@ -249,6 +260,9 @@ def check_record(key, r, base, all_numbers):
         report("ERROR", key, "isRedLetter 为 true，价税合计却是正数——照票面记负数，不要取绝对值")
     if red is True:
         of = r.get("redLetterOf")
+        if of is not None and not isinstance(of, str):
+            report("ERROR", key, f"redLetterOf 必须是字符串，现在是 {type(of).__name__}")
+            of = None
         if not of:
             report("WARN", key, "isRedLetter 为 true，redLetterOf 为空：回源（备注、XML）再找一次被冲销的蓝字号码，确实没有就标待复核")
         elif of not in all_numbers:
@@ -262,6 +276,13 @@ def check_record(key, r, base, all_numbers):
     archived = r.get("archivedPath")
     if not archived:
         report("ERROR", key, "archivedPath 为空")
+        return 0
+    if not isinstance(archived, str):
+        report("ERROR", key, f"archivedPath 必须是字符串，现在是 {type(archived).__name__}")
+        return 0
+    if archived.startswith(("\\\\", "//")):
+        # 网络路径：连 resolve / exists 都不做，免得先去连远端共享
+        report("ERROR", key, "archivedPath 是网络路径，不在本目录的 归档/ 下")
         return 0
     path = Path(archived)
     if not path.is_absolute():
@@ -279,7 +300,7 @@ def check_record(key, r, base, all_numbers):
         else:
             report("ERROR", key, "archivedPath 不在本目录的 归档/ 下")
             return 0
-    if not path.exists():
+    if not path.is_file():
         report("ERROR", key, f"归档文件不存在：{path.name}")
     xml_path = path.with_suffix(".xml")
     if not xml_path.exists():
@@ -325,6 +346,9 @@ def check_claims(ledger, all_numbers, triples):
             continue
         claim = item.get("claim") if isinstance(item.get("claim"), dict) else {}
         number = claim.get("invoiceNumber")
+        if number is not None and not isinstance(number, str):
+            report("WARN", str(item.get("id") or "claim"), "待领取条目的发票号码不是字符串，按没抄到处理")
+            number = None
         key = number or item.get("id") or "claim"
         if number and number in seen:
             report("WARN", key, "同一个号码有两条待领取，只留一条")
@@ -333,8 +357,10 @@ def check_claims(ledger, all_numbers, triples):
             seen.add(number)
         if item.get("dismissed") is True or (number and str(number) in all_numbers):
             continue
+        seller, day = claim.get("sellerName"), claim.get("invoiceDate")
         try:
-            triple = (claim.get("sellerName"), dec(claim.get("totalAmount")), claim.get("invoiceDate"))
+            triple = (seller, dec(claim.get("totalAmount")), day) \
+                if isinstance(seller, (str, type(None))) and isinstance(day, (str, type(None))) else None
         except TypeError:
             triple = None
         if triple is not None and triple[1] is not None and triple in triples:
@@ -379,10 +405,12 @@ def main():
             all_numbers.add(str(r["invoiceNumber"]))
             if r.get("invoiceCode"):
                 all_numbers.add(f"{r['invoiceCode']}-{r['invoiceNumber']}")
-        try:
-            triples.add((r.get("sellerName"), dec(r.get("totalAmount")), r.get("invoiceDate")))
-        except TypeError:
-            pass
+        seller, day = r.get("sellerName"), r.get("invoiceDate")
+        if isinstance(seller, (str, type(None))) and isinstance(day, (str, type(None))):
+            try:
+                triples.add((seller, dec(r.get("totalAmount")), day))
+            except TypeError:
+                pass
     xml_checked = 0
     for key, r in records:
         if not isinstance(r, dict):
