@@ -49,8 +49,8 @@ CHANGELOG.md        变更历史，与 market 卡片的 changelog 对应
 LICENSE             MIT，市场 sidecar 的 compliance.licenseEvidencePath 指向它
 skills/
 ├── invoice-extract/     票面字段抽取；references/ 有「票面文本形态」1 篇
-├── invoice-ledger/      台账与月度报告；references/ 有「月度报告模板」1 篇
-├── invoice-workflow/    端到端整理流程（无 references）
+├── invoice-ledger/      台账与月度报告；references/ 有「月度报告模板」1 篇；scripts/check-ledger.py 出台账前的自检（只读）
+├── invoice-workflow/    端到端整理流程（无 references）；scripts/unpack-zip.sh 解 zip 附件
 └── invoice-automation/  定时与无人值守（无 references）
 ```
 
