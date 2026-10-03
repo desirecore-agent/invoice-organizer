@@ -29,7 +29,12 @@ desirecore/market
 
 **市场侧只有这三个文件，不能多。** 校验器用 `inline_path.is_file() == pointer_path.is_file()` 判定——`agent.json` 与 `entry.json` **必须恰好存在一个**，都有或都没有都会让条目从市场消失。
 
-**改内容 → 改本仓库；发新版 → 改市场卡片的 pin。** 用户装到的永远是卡片上 pin 的那个 commit，不是本仓库最新 `main`。
+**改内容 → 改本仓库；发新版 → 改市场卡片的 pin。** 新安装装到的是卡片上 pin 的那个 commit，不是本仓库最新 `main`。已安装用户的更新取决于客户端版本：
+
+- **v10.0.177 之后的客户端**（包含 desirecore/desirecore#3728）：只会被更新到卡片当前的 pin。`main` 上领先 pin 的提交，在市场 repin PR 合并、客户端同步到新目录之前不会送达；条目被拦、下架或与本仓库对不上时，更新暂停。
+- **v10.0.177 及更早的客户端**：仍跟随本仓库 `main` 的最新提交。`main` 上的 `agent.json#version` 一旦递增，这些用户最迟约 10 分钟内会被无人值守更新到 `main` 头，中间所有提交一并带上；版本号不变的提交不会单独推送，但会随下一次版本递增一起送达。
+
+所以在旧客户端退出使用之前，**合进 `main` 仍等于对一部分已安装用户发布**：版本递增的提交只在市场 repin PR 已准备好时合入，并紧接着合并 repin。
 
 ### 迁移前的历史形态（读旧记录时会遇到）
 
@@ -190,7 +195,7 @@ grep -rInE "[0-9]{15,20}|@[a-z0-9.-]+\.[a-z]{2,}|/Users/[a-z]+|¥[0-9]" . --excl
 
 2. **搬内容时不要机械替换。** 从同类仓库复制 `NOTICE` / `README` 这类文件时，`sed` 批量改名会造出事实错误（实测把一份 NOTICE 里的第三方 CLI 名称改错、还留下了错误的技能来源描述）。事实性文件重写，不要替换。
 
-3. **安装是整树复制。** `EXCLUDED_SEGMENTS` 只有 `upstream` / `.git` / `node_modules` / `.cache`，所以 `README.md` / `LICENSE` / `CHANGELOG.md` / `CLAUDE.md` / `AGENTS.md` 全都会进用户的 AgentFS 并计入 `contentDigest`。加文件前想一下它是否该出现在用户机器上。
+3. **安装是整棵 git 树检出。** 客户端把本仓库 fork 进用户的 `agents/<id>/`，所有被 git 跟踪的文件（`README.md` / `LICENSE` / `CHANGELOG.md` / `CLAUDE.md` / `AGENTS.md`）都会进用户的 AgentFS，之后每次更新也一并合入；安装回执不再记录 `contentDigest`。加文件前想一下它是否该出现在用户机器上。
 
 4. **`validate` 的 ERROR 淹在上百条 WARN 里。** 末尾那行 `N error(s), M warning(s)` 才是判据。
 
