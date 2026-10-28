@@ -2,6 +2,8 @@
 
 ## Check three things before installing
 
+Requires DesireCore v10.0.180 or later.
+
 **1. A mailbox is connected.** This is the only step that requires you: authorize an account (Gmail, Outlook or IMAP) in the DesireCore mail interface. Without one, the Agent can still parse files you drop into its work directory yourself, but the collection step is unavailable.
 
 **2. There is a work directory you can actually find.** After installation the Agent automatically receives a default workspace, but that path is hard to locate in a file manager. On the first conversation it will suggest registering a visible directory (for example `~/Documents/invoices`) and making it primary — just agree. Deliverables land there and appear in DesireCore's file workbench.
@@ -30,7 +32,7 @@ One new directory under your work directory:
 ├── 报告/2024-08.md     (reports; invoices spanning months write 报告/2020-08_2024-09.md)
 ├── 归档/2024/08/20240815_<seller>_1959.98_24312000000000020002.pdf   (archive, by year/month)
 ├── _inbox/            downloaded, not yet processed
-├── _quarantine/       parse failures, non-invoices, and invoice-claim QR pages whose original is still to be claimed, each with a .reason.txt
+├── _quarantine/       parse failures, non-invoices, invoice-claim QR pages whose original is still to be claimed, and files you dropped into _inbox/ that were already recorded, each with a .reason.txt
 └── .index/            dedupe index — do not edit by hand
 ```
 
