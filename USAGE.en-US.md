@@ -2,6 +2,8 @@
 
 ## Check three things before installing
 
+Requires DesireCore v10.0.180 or later.
+
 **1. A mailbox is connected.** This is the only step that requires you: authorize an account (Gmail, Outlook or IMAP) in the DesireCore mail interface. Without one, the Agent can still parse files you drop into its work directory yourself, but the collection step is unavailable.
 
 **2. There is a work directory you can actually find.** After installation the Agent automatically receives a default workspace, but that path is hard to locate in a file manager. On the first conversation it will suggest registering a visible directory (for example `~/Documents/invoices`) and making it primary — just agree. Deliverables land there and appear in DesireCore's file workbench.
@@ -30,7 +32,7 @@ One new directory under your work directory:
 ├── 报告/2024-08.md     (reports; invoices spanning months write 报告/2020-08_2024-09.md)
 ├── 归档/2024/08/20240815_<seller>_1959.98_24312000000000020002.pdf   (archive, by year/month)
 ├── _inbox/            downloaded, not yet processed
-├── _quarantine/       parse failures, non-invoices, and invoice-claim QR pages whose original is still to be claimed, each with a .reason.txt
+├── _quarantine/       parse failures, non-invoices, invoice-claim QR pages whose original is still to be claimed, and files you dropped into _inbox/ that were already recorded, each with a .reason.txt
 └── .index/            dedupe index — do not edit by hand
 ```
 
@@ -46,7 +48,7 @@ Every monthly report opens with a one-line conclusion before any detail, and eac
 - **PDF**: fully digital VAT e-invoices (the nationwide platform format used since 2023, both ordinary and special), legacy VAT electronic ordinary invoices, railway e-tickets (the new "e-invoice (railway e-ticket)" and the old reimbursement voucher), air transport e-ticket itineraries, taxi and ride-hailing receipts
 - **OFD**: reads the structured invoice data carried inside the package. A 2020-style invoice ships a complete national-standard invoice XML in the package — those values are written by the issuing system rather than guessed from the layout, so that path gets full confidence. A 2024 fully-digital invoice carries only invoice tags, which cannot supply the invoice code or the per-line item breakdown; those are recovered from the layout text and confidence is lowered to match. When neither is present it falls back to layout text. When the same invoice arrives as both OFD and PDF, fields are taken from the OFD and both files are archived side by side under the same name: the PDF for easy viewing, the OFD for the structured data written by the issuing system
 - **XML**: the standard XML that often accompanies a fully-digital invoice carries the most complete fields; when an invoice has one, fields are taken from it, and it is archived side by side with the OFD and PDF (some reimbursement systems ask for the XML)
-- **ZIP**: `.zip` attachments are checked and then unpacked (this is how 12306 sends railway e-tickets); the PDF / OFD / XML / image files inside go through the rules above. Archives nested inside archives, `.rar` / `.7z`, and password-protected archives are not unpacked — they are listed for you to handle
+- **ZIP**: `.zip` attachments are checked and then unpacked (railway e-tickets often arrive this way); the PDF / OFD / XML / image files inside go through the rules above. Archives nested inside archives, `.rar` / `.7z`, and password-protected archives are not unpacked — they are listed for you to handle
 - **Scans and images**: JPG, PNG, WebP, and scanned PDFs with no text layer, handed to the vision model with confidence lowered accordingly
 
 **Red-letter invoices** (the negative invoice a seller issues to cancel a fully-digital invoice issued in error) are posted at their printed negative amounts and offset the original they cancel. The original is marked `已红冲` (fully reversed) or `部分红冲` (partially reversed) in the ledger, and the report lists each pair so you know the reversed portion can no longer be reimbursed.
