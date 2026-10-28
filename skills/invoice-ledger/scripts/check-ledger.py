@@ -496,6 +496,16 @@ def main():
                 triples.add((seller, dec(r.get("totalAmount")), day))
             except TypeError:
                 pass
+    # 同一个号码只能有一条记录：旧版「哈希不同就保留两份」留下的 <号码>_2 副本被重新入账，就会重复计账
+    by_number = {}
+    for k, r in records:
+        if isinstance(r, dict) and isinstance(r.get("invoiceNumber"), str) and r["invoiceNumber"].strip():
+            ident = (str(r.get("invoiceCode") or "").strip(), r["invoiceNumber"].strip())
+            by_number.setdefault(ident, []).append(str(k))
+    for (code, number), keys in by_number.items():
+        if len(keys) > 1:
+            label = f"{code}-{number}" if code else number
+            report("ERROR", clean(keys[0], 80), f"发票号码 {clean(label, 40)} 出现在 {len(keys)} 条记录里（{clean('、'.join(keys[1:]), 120)}）：同一张票只能入账一次，留下主件那条，其余按重复件处理")
     xml_checked = 0
     for key, r in records:
         if not isinstance(r, dict):

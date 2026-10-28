@@ -87,23 +87,23 @@ Preflight 的结论用一段话说给用户听：找到几个邮箱、产物会�
 | provider | 怎么补 | 要不要每次都补 |
 | --- | --- | --- |
 | Gmail | `POST /api/gmail/messages/fetch?email=..`，请求体 `{query: "after:<起始日前一天> before:<结束日后两天>", limit, pageToken}`，按 `nextPageToken` 翻到没有为止 | **每次都补**：Gmail 查询里的日期按太平洋时间解释，两端各放宽一天，由下一步的缓存搜索按本机时区精确截断；查询串有空格，放请求体别放 URL。服务端已按日期筛过，量就是这个时间段本身 |
-| IMAP 收件箱 | `POST /api/imap/messages/fetch?email=..&folder=INBOX&limit=50&offset=..`，`offset` 从 0 起每次加 50，从最新往旧补 | 看 `.index/coverage.json`：请求的起始日期不早于记下的 `coveredFrom`、而且现在从 `coveredFrom` 数起的 `G` 不少于记下的 `coveredCount` 就不用补（收件箱按 UID 增量轮询，停机后能接上）；否则补。`G` 变少说明缓存被清过（比如服务器重建了文件夹）；没有 `coveredCount` 的旧记录当作没补过 |
+| IMAP 收件箱 | `POST /api/imap/messages/fetch?email=..&folder=INBOX&limit=50&offset=..`，`offset` 从 0 起每次加 50，从最新往旧补 | 看 `.index/coverage.json`：请求的起始日期不早于记下的 `coveredFrom`、而且 `search?folder=INBOX&dateFrom=<coveredFrom>&dateTo=<coveredAt>&limit=0` 的 `total` 不少于记下的 `coveredCount` 就不用补（收件箱按 UID 增量轮询，停机后能接上）；否则补。这个计数变少说明缓存被清过（比如服务器重建了文件夹）；没有 `coveredCount` / `coveredAt` 的旧记录当作没补过 |
 | IMAP 其他文件夹 | 同 IMAP 收件箱，`folder` 用 `GET /api/imap/folders` 返回的 `path`，放进请求体（不用 URL 编码） | **每次都补**：轮询只看收件箱，这些文件夹里新到的邮件不会自己进缓存 |
 | Outlook | `POST /api/outlook/messages/fetch?email=..&folder=..&limit=100&offset=..`，`offset` 每次加 100（Graph 一页只发一次请求） | **每次都补**：delta 不可用时轮询每轮只取收件箱最新 30 封，停机期间到得多就有缺口 |
 
 Gmail 要读返回里的 `nextPageToken`：响应超过工具的输出上限时，照 ② 里「响应很大」的办法加 `save_to` 存页再读，读完即删。
 
-**IMAP / Outlook 什么时候停**：每**成功**补一次，查一次 `G` = `search?folder=..&dateFrom=<起>&limit=0` 的 `total`（**不带** `dateTo`），即缓存里晚于起始日期的邮件数。`folder` 与补拉时相同；**IMAP 收件箱以外的文件夹不带 `folder`**，数的是所有文件夹的合计（原因见 ②）。
+**IMAP / Outlook 什么时候停**：每**成功**补一次，查一次 `G` = `search?folder=..&dateFrom=<起>&limit=0` 的 `total`（**不带** `dateTo`），即缓存里晚于起始日期的邮件数。`folder` 与补拉时相同；IMAP 收件箱以外的文件夹按 ② 里的规则决定带不带 `folder`，不带时数的是所有文件夹的合计。
 
 - **`offset` 达到 `G` 之后，成功补过的邮件累计满 100 封 `G` 都没增长**（按成功请求的 `limit` 累计），才停——达到 `G` 之前补的不算进这 100 封。**失败的请求不算**：不查 `G`、不计入这 100 封、不能据此判停（超时的那一页服务端可能还没写完缓存，这时 `G` 不涨说明不了什么）。`pagination.hasMore` 为 `false`、或返回了能看清的空页（`offset` 超过总数时服务端返回空页），随时可停。
 - 为什么是「晚于起始日期」而不是「时间段内」：新用户整理接入邮箱之前的月份时，时间段结束日到接入日之间还有一大段邮件从没进过缓存。补拉先补到的是这一段，「时间段内」的计数纹丝不动，按它判停就会在这段缺口里停下，一封目标邮件都补不到。「晚于起始日期」的计数对缺口里和时间段里的邮件都会增长，只有连着 100 封都早于起始日期（或全是已经缓存的）时才不动。
 - `offset >= G` 保证先翻过已经缓存的那部分再判停：服务器上晚于起始日期的邮件至少有 `G` 封，`offset` 没到 `G` 之前一定还没翻到起点。中途中断后重跑同理。
 - 新开始的补拉仍从 `offset=0` 补起（中断后接着补见下）：更新的区段也可能有缺口（比如 Outlook 停机期间到的邮件）。
-- 缓存按文件夹统计的计数只是近似值：IMAP 收件箱以外的文件夹不带 `folder`，数的是全部文件夹；Outlook 经 delta 同步进来的邮件文件夹可能记成 `other`，`folder=inbox` 的计数会偏少——按上面的规则只会多补、不会漏。
+- 缓存按文件夹统计的计数只是近似值：IMAP 的文件夹按名称或用途归成几类，`folder=<path>` 数到的是同一类所有文件夹的合计，不带 `folder` 时是全部文件夹；Outlook 经 delta 同步进来的邮件文件夹可能记成 `other`，`folder=inbox` 的计数会偏少——按上面的规则只会多补、不会漏。
 
 - 不能用「缓存里出现了早于起始日期的邮件」或「这一页里有一封早于起始日期的邮件」当停止条件：缓存的收件时间取的是信头 `Date`，发件方可以随便写，一封日期很旧的垃圾邮件、或补拉前就已在缓存里的旧邮件，都会让补拉在第一两页就停——实测按日期停翻一轮漏掉了一批范围内的邮件。看「晚于起始日期的邮件数是否还在增长」不受这些影响。
-- `coveredFrom` 只在满足停止条件**之后**才写（值为这次的起始日期），同时把这时的 `G` 记成 `coveredCount`；中途中断不写，下次从 `backfill` 接着补（见下）。只有 IMAP 收件箱用它跳过补拉，其他一律每次都补。
-- **IMAP 补拉返回里的 `skipped`**：窗口里重取一次仍没拿到的邮件（`{uid, reason}`），它们不进缓存，缓存搜索里永远看不到。每页看一眼（在 `pagination` 前面，响应很大时也在结尾那部分里），不是空的就逐个按 UID 取详情：`GET /api/imap/messages/<uid>?email=..&folder=<这个文件夹的 path，URL 编码>`，取到的会记进缓存。仍取不到的在 `unprocessed` 里记一条（`emailKey` 写 `skipped:imap:<email>:<path>:<uid>`，`attachmentName` 写「整封邮件」，`retryable: true`，原因写「邮件服务没取到这封邮件」），下次整理先按同样的办法重取，取到就删掉这一条。
+- `coveredFrom` 只在满足停止条件**之后**才写（值为这次的起始日期），同时把这时的 `G` 记成 `coveredCount`、把这一刻（ISO 时间）记成 `coveredAt`——之后按 `coveredFrom`～`coveredAt` 这个固定窗口复查，新到的邮件不会把计数撑大；中途中断不写，下次从 `backfill` 接着补（见下）。只有 IMAP 收件箱用它跳过补拉，其他一律每次都补。
+- **IMAP 补拉返回里的 `skipped`**：窗口里重取一次仍没拿到的邮件（`{uid, reason}`），它们不进缓存，缓存搜索里永远看不到。每页看一眼（在 `pagination` 前面，响应很大时也在结尾那部分里），不是空的就逐个按 UID 取详情：`GET /api/imap/messages/<uid>?email=..&folder=<这个文件夹的 path，URL 编码>`，取到的会记进缓存。仍取不到的在 `unprocessed` 里记一条（`emailKey` 写 `skipped:imap:<email>:<path>:<uid>`，`emailSubject` 与 `receivedAt` 留 `null`，`attachmentName` 写「整封邮件」，`retryable: true`，原因写「邮件服务没取到这封邮件」），下次整理先按同样的办法重取，取到就删掉这一条；`attempts` 到 3 还取不到就改成 `retryable: false`，报告里这类合并成一行。
 - 补拉要从邮箱服务器逐页现取，邮件多的邮箱要补很久。开工前按 `offset` 要翻到的量告诉用户大约要补多少封、会花一些时间。
 - **IMAP 每页 50 封**：一页失败要在同一位置减半重来，页小一些，重来的量也小。
 
@@ -130,15 +130,15 @@ Gmail 要读返回里的 `nextPageToken`：响应超过工具的输出上限时�
   - 起始日期与 `backfill.from` 相同，就退一页（IMAP 50、Outlook 100）、从 `max(0, nextOffset − 一页的大小)` 接着补。多补一页是为了兜住中断期间被删除或移走的邮件：序号从最新一封往回数，已补区段里少掉几封，没补的那段就整体往新的方向挪几位，不退一页就会跳过它们。新到的邮件方向相反，只会与已补部分重叠。
   - `backfill.updatedAt` 超过一天、用户说过中断期间清理过邮箱、或起始日期不同，就从 0 起，覆盖 `backfill`。
   - Outlook 与 IMAP 收件箱以外的文件夹，接着补之前先补一页 `offset=0`：中断期间新到或移进来的邮件排在最前面，接着补覆盖不到（Outlook 是 delta 不可用时，其他文件夹是没有轮询）。
-- 判停规则照旧。满足停止条件后，在**同一次** `Write` 里删掉 `backfill`、写上 `coveredFrom` 与 `coveredCount`。
+- 判停规则照旧。满足停止条件后，在**同一次** `Write` 里删掉 `backfill`、写上 `coveredFrom`、`coveredCount` 与 `coveredAt`。
 - Gmail 的 `pageToken` 会过期，不记。
 - 所有要补的邮箱与文件夹都补完，再开始下一步翻页：翻页过程中缓存增删邮件，页边界会漏一封或重复一封。
 
 **② 从缓存列候选**：`GET /api/{gmail,outlook,imap}/search?email=..&folder=..&dateFrom=<起>&dateTo=<止>&hasAttachment=true&offset=..&limit=..`
 
-- **IMAP 收件箱带 `folder=INBOX`；其他文件夹不带 `folder`**，按每封邮件的 `imapFolder` 只留与这个文件夹的 `path` 逐字相同的。缓存按文件夹只分收件箱、已发送、草稿、垃圾邮件、已删除、归档和「其他」几类，自定义文件夹落进哪一类取决于文件夹名和服务器标的用途，`folder=<path>` 不一定对得上，对不上就静默得到 0 封。
+- **IMAP 带不带 `folder`**：缓存按文件夹只分收件箱、已发送、草稿、垃圾邮件、已删除、归档和「其他」几类。收件箱带 `folder=INBOX`。其他文件夹看 `GET /api/imap/folders` 返回的 `specialUse`：没有的，带 `folder=<path>`（URL 编码）——入库和查询都按名称归类，对得上；有的（服务器标了已发送、垃圾邮件这类用途），不带 `folder`——它入库按哪个口径归类随客户端版本不同，带了可能对不上、静默得到 0 封。两种都按每封邮件的 `imapFolder` 只留与这个文件夹的 `path` 逐字相同的；几个文件夹都不带 `folder` 时只翻一遍，按 `imapFolder` 分给各文件夹。不带 `folder` 时 `G` 数的是全部文件夹，补拉要多翻一些，开工前按这个文件夹第一页返回的 `pagination.total` 告诉用户最多要补多少封。
 
-- 按收件时间精确筛（`YYYY-MM-DD`，含首尾两天）。先用 `limit=0` 取 `total`，再按 `offset` 翻到 `offset >= total`；按邮件 id 去重，收尾核对去重后的 id 数等于 `total`（IMAP 自定义文件夹按 `imapFolder` 筛掉的不算）。
+- 按收件时间精确筛（`YYYY-MM-DD`，含首尾两天）。先用 `limit=0` 取 `total`，再按 `offset` 翻到 `offset >= total`；按邮件 id 去重，收尾核对翻页见到的去重 id 数（按 `imapFolder` 筛之前）等于 `total`。
 - **Gmail 不带 `folder`**：归档或打了标签、不在收件箱的邮件在缓存里记成 `other`，带 `folder=inbox` 会把它们排除掉；`coverage.json` 里 Gmail 的文件夹键固定写 `*`。
 - `hasAttachment=true`：本 Agent 只处理附件，这样候选少、响应也小。`q` 只按主题过滤（见下），发件人用 `from` 参数。
 - **Outlook 的搜索结果没有 `attachments[]`**（同一份缓存），要逐封取详情，见下面「列表项的字段」。
@@ -274,7 +274,7 @@ bash '${SKILL_DIR}/scripts/unpack-zip.sh' \
 
 zip 里再套 zip：内层包不在白名单里，会被 `SKIP` 丢掉——看到 `SKIP` 的是 `.zip` / `.rar` / `.7z`，在 `unprocessed` 里记一条（内层包已经随临时目录删掉，只有这一条记录能提醒用户）。`__MACOSX/` 下的条目和 `._` 开头的文件是 macOS 打包时带进去的元数据，脚本直接 `SKIP`，不用管，请用户解开后放进 `_inbox/`。
 
-**处理不了的附件要落盘。** 手里没有文件、隔离区也不会出现的那些——下载失败、没下载的 `.rar` / `.7z`、zip 里被 `SKIP` 的内层压缩包——在 `ledger.json` 的 `unprocessed` 数组里记一条：`{emailKey, emailSubject, receivedAt, attachmentName, reason, retryable, firstSeenAt, lastTriedAt, attempts}`（`emailKey` 与 `emails.json` 的 key 同形；报告要引用邮件主题和收件时间，所以一并存下；`retryable` 表示再跑一次有没有可能成功，下载失败是 `true`，格式问题是 `false`）。同一个 `emailKey` + `attachmentName` 只有一条，再次失败时更新 `lastTriedAt` 与 `attempts`，不追加。解不开的 zip 已经在 `_quarantine/` 里，不重复记。`retryable: true` 的那封邮件**不写进** `emails.json`，下次收集到它时重试，成功后删掉这一条；`retryable: false` 的，这封邮件的其他附件照常处理完就写 `emails.json`，这一条一直留着，直到用户说已经手动处理。月度报告与每次收尾都把 `unprocessed` 全部列出来。用户说「重试未下载的附件」时，对其中 `retryable: true` 的逐条回邮箱重新下载，不必重扫整个时间范围。旧版本写的 `ledger.json` 没有这个键，当它是空数组，写回时补上。
+**处理不了的附件要落盘。** 手里没有文件、隔离区也不会出现的那些——下载失败、没下载的 `.rar` / `.7z`、zip 里被 `SKIP` 的内层压缩包——在 `ledger.json` 的 `unprocessed` 数组里记一条：`{emailKey, emailSubject, receivedAt, attachmentName, reason, retryable, firstSeenAt, lastTriedAt, attempts}`（`emailKey` 与 `emails.json` 的 key 同形，例外是 `list:` 与 `skipped:` 开头的两种，见上；报告要引用邮件主题和收件时间，所以一并存下；`retryable` 表示再跑一次有没有可能成功，下载失败是 `true`，格式问题是 `false`）。同一个 `emailKey` + `attachmentName` 只有一条，再次失败时更新 `lastTriedAt` 与 `attempts`，不追加。解不开的 zip 已经在 `_quarantine/` 里，不重复记。`retryable: true` 的那封邮件**不写进** `emails.json`，下次收集到它时重试，成功后删掉这一条；`retryable: false` 的，这封邮件的其他附件照常处理完就写 `emails.json`，这一条一直留着，直到用户说已经手动处理。月度报告与每次收尾都把 `unprocessed` 全部列出来。用户说「重试未下载的附件」时，对其中 `retryable: true` 的逐条回邮箱重新下载（`skipped:` 开头的是重取详情），不必重扫整个时间范围。旧版本写的 `ledger.json` 没有这个键，当它是空数组，写回时补上。
 
 **邮件 id 不在这一步写。** `emails.json` 一旦记下某个 id，收集阶段就永远跳过这封邮件——
 所以它必须等到**这封邮件的发票记录已经落进 `ledger.json`** 之后才写，见下面的「单份发票的落盘顺序」
@@ -290,7 +290,7 @@ zip 里再套 zip：内层包不在白名单里，会被 `SKIP` 丢掉——看�
 
 解析结果必须包含 `extractedBy`（`xml` / `ofd-xml` / `text-layer` / `vision`）与 `confidence`（0–1）。
 
-**同一张票的几种载体：先 XML，再 OFD，最后 PDF。** 开票平台经常把同一张票的 `.xml`、`.ofd`、`.pdf` 一起发（实测最常见的是三件套，其次是 OFD + PDF）。**是不是同一张票以解析结果为准**：同一封邮件里的几个文件解析出相同的发票号码主键（第 4 步第 1–3 条），就是同一张票的几种载体；兜底键相同的不算，按两张票处理。文件名只是解析前的提示——去掉扩展名同名的大概率是同票，但附件名五花八门（实测有 `<名>.pdf` 配 `<名>.ofd_查阅需OFD阅读器.ofd`），只看文件名会漏配。
+**同一张票的几种载体：先 XML，再 OFD，最后 PDF。** 开票平台经常把同一张票的 `.xml`、`.ofd`、`.pdf` 一起发（实测最常见的是三件套，其次是 OFD + PDF）。**是不是同一张票以解析结果为准**：同一封邮件里的几个文件解析出相同的发票号码主键（第 4 步第 1–3 条），而且开票日期、价税合计、销售方也对得上（核对口径同第 4 步「主键已经入账的文件」），就是同一张票的几种载体；兜底键相同的不算，按两张票处理。字段有一项对不上的，或者同一种扩展名出现了第二份，按第 4 步那一条处理。下面 OFD 第 1 种里「同一个 zip 里的一对」「各只一份、原名对应」两条捷径不解析 PDF，不做这项核对。文件名只是解析前的提示——去掉扩展名同名的大概率是同票，但附件名五花八门（实测有 `<名>.pdf` 配 `<名>.ofd_查阅需OFD阅读器.ofd`），只看文件名会漏配。
 
 **XML 排在最前**：根元素是 `EInvoice` 的数电票 XML（`invoice-extract` 的「数电票 XML」）是开票系统直接写出的完整数据，价税合计是完整数字、日期是标准格式，比 OFD 标引解引用出来的值（价税合计常常只剩一个 `¥`）更完整，置信度 1.0。它读出四个必填字段齐全时就以它为准，同封邮件里 OFD 与 PDF 解析出同一个去重主键的都是它的伴随载体。XML 是空文件（实测见过只有一个换行的）时**不归档、不隔离**，在 `files.json` 里记「空文件，丢弃」——归档一个空 XML，用户拿去上传报销系统只会报错。根元素不是 `EInvoice` 的 XML 按下面第 3 种「什么都读不出」对待。其余载体照下面三种情况处理。
 
@@ -325,13 +325,13 @@ zip 里再套 zip：内层包不在白名单里，会被 `SKIP` 丢掉——看�
 
 **疑似重复不自动合并。** 发票号码只差一位、其余字段全同 → 记进结果里的 `suspectedDuplicates`，收尾时列给用户，让他判断是「真的开了两张」还是「抄错了一位」。
 
-**主键已经入账的文件。** 这一条只管**跨邮件**的情形：sha256 不同，解析出的发票号码主键（上面第 1–3 条）却已经在 `ledger.json` 里——开票平台重发了一次、同一张票换一封邮件又发来、用户手工又放了一份进 `_inbox/`，或者同一张票的另一种载体隔了一封邮件才到。同一封邮件里的几份按第 3 步配载体，不走这条；兜底键撞上的见本条最后。
+**主键已经入账的文件。** 这一条管第 3 步配成载体的那几份以外的情形：sha256 不同，解析出的发票号码主键（上面第 1–3 条）却已经在 `ledger.json` 里——开票平台重发了一次、同一张票换一封邮件又发来、用户手工又放了一份进 `_inbox/`，或者同一张票的另一种载体隔了一封邮件才到。同一封邮件里按第 3 步配成载体的几份不走这条（同一封里字段对不上的、同一种扩展名的第二份照样走这条）；兜底键撞上的见本条最后。
 
-**先核对是不是真的同一张**：开票日期、价税合计、销售方（名称或税号；票面不载销售方的铁路电子客票不比这一项）都与已入账的记录相同才算。任何一项不同，多半是号码读错了一位——不当成重复件，也不删：先在 `quarantined` 里记一条、在 `suspectedDuplicates` 里记一组（`keys` 写已入账的主键，`quarantinedPath` 写它在 `_quarantine/` 的路径，`reason` 写哪一项不同），再移进 `_quarantine/`，`.reason.txt` 写「号码与已入账的 <发票号码> 相同，但 <哪一项> 不同，可能读错了号码」。
+**先核对是不是真的同一张**：开票日期、价税合计、销售方（名称或税号；票面不载销售方的铁路电子客票不比这一项）都与已入账的记录相同才算。任何一项不同，多半是哪一张的号码读错了一位——不当成重复件，也不删。按这个顺序落盘：`files.json` 记它的去向为「号码冲突，已隔离」；`quarantined` 里记一条（`kind: "numberMismatch"`、`conflictsWith: <已入账的主键>`、它在 `_quarantine/` 的路径）；`suspectedDuplicates` 里记一组（`keys` 写已入账的主键，`quarantinedPath` 写同一路径，`reason` 写哪一项不同）；最后移进 `_quarantine/`，`.reason.txt` 写「号码与已入账的 <发票号码> 相同，但 <哪一项> 不同，可能读错了号码」。已有同一路径的条目就不再记。用户核对后给出正确号码、或「按新规则重新解析」后号码变了的，照常入账，并删掉这一条和对应的那一组。
 
 核对相同的，不是新的一张票：
 
-- **不新增记录，主件与溯源不动**：`archivedPath`、`fileSha256`、`format` 和 `sourceEmailId` 等溯源字段保持第一次入账时的样子。新文件是 XML、或 OFD 给出结构化来源时，它的字段按「按新规则重新解析」的合并规则并进记录（只补全不清空，两边都有值且不同时取置信度高的一方）；其余载体不改字段。
+- **不新增记录，主件与溯源不动**：`archivedPath`、`fileSha256`、`format` 和 `sourceEmailId` 等溯源字段保持第一次入账时的样子。新文件是 XML、或 OFD 给出结构化来源时，它的字段按「按新规则重新解析」的合并规则并进记录（只补全不清空，两边都有值且不同时取置信度高的一方），记录的 `extractedBy` 改成它的来源，`confidence` 按合并后的字段重新取最小值；其余载体不改字段。
 - **它是 XML、OFD 或 PDF，而这张票的归档里还没有这种扩展名**（先到了 PDF，这次来的是 OFD 或 XML）：按伴随载体处理，复制到同一个归档目录、同名换成它自己的扩展名，`files.json` 的去向写伴随载体、指向主件的 sha256。
 - **其余情况**（归档里已经有这种扩展名，或是图片——用户拍的照片、扫描件）是重复件：不再归档，也不加 `_2`。先在 `files.json` 记它的去向为「重复件」并写上主键，再处理原件：
   - 从邮件下载的：照常在第 7 步从 `_inbox/` 删掉（邮箱里还有）。
@@ -450,7 +450,7 @@ zip 里再套 zip：内层包不在白名单里，会被 `SKIP` 丢掉——看�
 // .index/coverage.json —— 缓存补齐到哪天、进行中的补拉进度（见第 2 步）
 { "schemaVersion": 1, "updatedAt": "<ISO8601>",
   "accounts": { "<provider>:<email>": { "<文件夹>": {   // IMAP 收件箱写 INBOX、其他文件夹写它的 path；Gmail 固定写 *
-      "coveredFrom": "YYYY-MM-DD", "coveredCount": 0,   // 满足停止条件后才写；coveredCount 是当时的 G
+      "coveredFrom": "YYYY-MM-DD", "coveredCount": 0, "coveredAt": "<ISO8601>",   // 满足停止条件后才写；coveredCount 是当时的 G
       "backfill": { "from": "YYYY-MM-DD", "nextOffset": 0, "updatedAt": "<ISO8601>" }  // 补拉进行中才有，补完删掉
   } } } }
 ```
@@ -595,7 +595,7 @@ zip 里再套 zip：内层包不在白名单里，会被 `SKIP` 丢掉——看�
    这是「落盘顺序」第 4–7 步之间崩溃时唯一的出路——那种文件既不在 `_inbox/`、又不在索引里，
    不主动扫就永远没人发现。文件名里带着开票日期、销售方、价税合计、发票号码，`FileDigest`
    再算一次 sha256 就能补齐 `fileSha256` 与 `archivedPath`；溯源字段恢复不了，留空并在收尾里注明。
-   文件名的销售方段是 `铁路电子客票` 的，`sellerName` 还原成 `null`，不要把这几个字当销售方；号码段是 `无号码` 的，`invoiceNumber` 还原成 `null`，号码段后面的 `_2` 这类后缀对应主键的 `#2`。
+   文件名的销售方段是 `铁路电子客票` 的，`sellerName` 还原成 `null`，不要把这几个字当销售方；号码段是 `无号码` 的，`invoiceNumber` 还原成 `null`，号码段后面的 `_2` 这类后缀对应主键的 `#2`——**只限 `无号码` 的文件**。有号码、号码段后面带 `_2` 这类后缀的，是 1.2.0 之前的版本「哈希不同就保留两份」留下的同一张票的另一份：sha256 记进 `files.json`、去向写「重复件」，不入账，也不删。
    **去掉扩展名同名的几个文件是同一张票的主件与伴随载体**，只对应一条记录——主件是 `archivedPath`
    指向的那一份，其余的不要当成漏账重新入账。
 3. **`ledger.json` 里 `archivedPath` 为空的记录**（第 4 步落了盘、第 5/6 步没走完）：按
